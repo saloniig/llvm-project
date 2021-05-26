@@ -657,6 +657,23 @@ struct FormatStyle {
   /// \endcode
   TrailingCommaStyle InsertTrailingCommas;
 
+  /// The style of inserting braces in control flow statements.
+  enum BraceInsertionStyle : unsigned char {
+    /// Do not insert braces.
+    BIS_Never,
+    /// Always insert braces.
+    BIS_Always,
+    /// Insert braces if the line is likely to wrap.
+    BIS_WrapLikely,
+  };
+
+  /// If set to ``BIS_WrapLikely`` will insert braces if the line after the
+  /// control flow statement is likely to wrap.
+  /// If set to ``BIS_Always`` will always insert braces.
+  /// The default is the disabled value of ``BIS_Never``.
+  BraceInsertionStyle InsertBraces;
+
+
   /// If ``false``, a function declaration's or function definition's
   /// parameters will either all be on the same line or will have one line each.
   /// \code
@@ -2396,7 +2413,8 @@ struct FormatStyle {
            IndentGotoLabels == R.IndentGotoLabels &&
            IndentPPDirectives == R.IndentPPDirectives &&
            IndentExternBlock == R.IndentExternBlock &&
-           IndentWidth == R.IndentWidth && Language == R.Language &&
+           IndentWidth == R.IndentWidth && 
+           InsertBraces == R.InsertBraces && Language == R.Language &&
            IndentWrappedFunctionNames == R.IndentWrappedFunctionNames &&
            JavaImportGroups == R.JavaImportGroups &&
            JavaScriptQuotes == R.JavaScriptQuotes &&
