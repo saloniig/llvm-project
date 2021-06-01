@@ -84,9 +84,9 @@ public:
 private:
   void reset();
   void parseFile();
-  int parseLevel(bool HasOpeningBrace);
+  void parseLevel(bool HasOpeningBrace);
   void parseBlock(bool MustBeDeclaration, bool AddLevel = true,
-                  bool MunchSemi = true, bool IsControlStatement = false);
+                  bool MunchSemi = true);
   void parseChildBlock();
   void parsePPDirective();
   void parsePPDefine();
@@ -96,13 +96,13 @@ private:
   void parsePPEndIf();
   void parsePPUnknown();
   void readTokenWithJavaScriptASI();
-  bool parseStructuralElement();
+  void parseStructuralElement();
   bool tryToParseBracedList();
   bool parseBracedList(bool ContinueOnSemicolons = false, bool IsEnum = false,
                        tok::TokenKind ClosingBraceKind = tok::r_brace);
   void parseParens();
   void parseSquare(bool LambdaIntroducer = false);
-  bool parseIfThenElse();
+  void parseIfThenElse();
   void parseTryCatch();
   void parseForOrWhileLoop();
   void parseDoWhile();
