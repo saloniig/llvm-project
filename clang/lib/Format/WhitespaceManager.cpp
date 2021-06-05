@@ -941,7 +941,9 @@ void WhitespaceManager::appendIndentText(std::string &Text,
       Text.append("\t");
 
       Text.append(Spaces / Style.TabWidth, '\t');
-      Text.append(Spaces % Style.TabWidth, ' ');
+      if (!Style.AllowIndentMultiLineForLoop == FormatStyle::IML_True) {
+        Text.append(Spaces % Style.TabWidth, ' ');
+      }
     } else if (Spaces == 1) {
       Text.append(Spaces, ' ');
     }

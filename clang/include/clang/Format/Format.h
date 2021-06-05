@@ -430,6 +430,26 @@ struct FormatStyle {
   /// If ``true``, comments indent can be one level more
   IndentComment AllowCommentsToIndentOneLevelMore;
 
+ // Allow multiline indentation for loop
+  enum IndentMultiLineForLoop {
+    /// Keep the indent as it is
+    /// \code
+    ///   for(int a = 0; a <= 7;
+    ///       ++a)
+    ///     //Remove space before ++
+    /// \endcode
+    IML_True,
+     /// Indent the comment as previous line indent
+    /// \code
+    ///   for(int a = 0; a <= 7;
+    ///      ++a)
+    ///     //Keep space before ++
+    /// \endcode
+    IML_False
+  };
+
+  IndentMultiLineForLoop AllowIndentMultiLineForLoop;
+
   /// Different styles for merging short lambdas containing at most one
   /// statement.
   enum ShortLambdaStyle {

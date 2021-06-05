@@ -148,6 +148,13 @@ template <> struct ScalarEnumerationTraits<FormatStyle::IndentComment> {
   }
 };
 
+template <> struct ScalarEnumerationTraits<FormatStyle::IndentMultiLineForLoop> {
+  static void enumeration(IO &IO, FormatStyle::IndentMultiLineForLoop &Value) {
+    IO.enumCase(Value, "true", FormatStyle::IML_True);
+    IO.enumCase(Value, "false", FormatStyle::IML_False);
+  }
+};
+
 template <> struct ScalarEnumerationTraits<FormatStyle::ShortLambdaStyle> {
   static void enumeration(IO &IO, FormatStyle::ShortLambdaStyle &Value) {
     IO.enumCase(Value, "None", FormatStyle::SLS_None);
@@ -447,6 +454,8 @@ template <> struct MappingTraits<FormatStyle> {
                    Style.AllowAllConstructorInitializersOnNextLine);
     IO.mapOptional("AllowAllParametersOfDeclarationOnNextLine",
                    Style.AllowAllParametersOfDeclarationOnNextLine);
+    IO.mapOptional("AllowIndentMultiLineForLoop",
+                   Style.AllowIndentMultiLineForLoop);
     IO.mapOptional("AllowShortEnumsOnASingleLine",
                    Style.AllowShortEnumsOnASingleLine);
     IO.mapOptional("AllowShortBlocksOnASingleLine",
@@ -1305,7 +1314,7 @@ Style.AccessModifierOffset = -4;
   Style.SpaceAfterTemplateKeyword = false;
   Style.SpaceBeforeParens = FormatStyle::SBPO_Haiku;
   Style.AllowCommentsToIndentOneLevelMore = FormatStyle::IC_True;
-  // Style.AlignConsecutiveDeclarations = true;
+  Style.AllowIndentMultiLineForLoop = FormatStyle::IML_True;
 
   return Style;
 }
