@@ -1737,9 +1737,9 @@ private:
   std::set<SourceLocation> Done;
 };
 
-class Haikuapi : public TokenAnalyzer {
+class LayoutBuilderFormatter : public TokenAnalyzer {
   public:
-  Haikuapi(const Environment &Env, const FormatStyle &Style)
+  LayoutBuilderFormatter(const Environment &Env, const FormatStyle &Style)
       : TokenAnalyzer(Env, Style) {}
 
   std::pair<tooling::Replacements, unsigned>
@@ -1748,15 +1748,15 @@ class Haikuapi : public TokenAnalyzer {
           FormatTokenLexer &Tokens) override {
     tooling::Replacements Result;
     if (AffectedRangeMgr.computeAffectedLines(AnnotatedLines))
-      haikuapi(AnnotatedLines, Result);
+      layoutbuilderformatter(AnnotatedLines, Result);
     return {Result, 0};
   }
   
   private:
-  void haikuapi(SmallVectorImpl<AnnotatedLine *> &Lines,
+  void layoutbuilderformatter(SmallVectorImpl<AnnotatedLine *> &Lines,
                     tooling::Replacements &Result) {
     for (AnnotatedLine *Line : Lines) {
-      haikuapi(Line->Children, Result);
+      layoutbuilderformatter(Line->Children, Result);
 
       // Get first token that is not a comment.
       const FormatToken *FirstTok = Line->First;
@@ -1770,12 +1770,19 @@ class Haikuapi : public TokenAnalyzer {
       if (LastTok->is(tok::comment))
         LastTok = LastTok->getPreviousNonComment();
 
-      // If this token starts a control flow stmt, mark it.
-      if (FirstTok->TokenText == "BLayoutBuilder") {
-        const SourceLocation StartSrcLoc = Line->First->Tok.getLocation();
-        const SourceLocation EndSrcLoc = Line->Last->Tok.getLocation();
-        unsigned layoutBuilderStart = StartSrcLoc.getLineNumber(Env.getSourceManager());
-        unsigned layoutBuilderEnd = EndSrcLoc.getLineNumber(Env.getSourceManager());
+      bool isBLayoutBuilder = false;
+      for (FormatToken *Tok = Line->First; Tok; Tok = Tok->Next) {
+        if (Tok->TokenText == "BLayoutBuilder") {
+          isBLayoutBuilder = true;
+          break;
+        }
+      }
+
+      if (isBLayoutBuilder) {
+        const SourceLocation StartSrcBLayoutBuilder = Line->First->Tok.getLocation();
+        const SourceLocation EndSrcBLayoutBuilder = Line->Last->Tok.getLocation();
+        unsigned BLB_LineStart = StartSrcBLayoutBuilder.getLineNumber(Env.getSourceManager());
+        unsigned BLB_LineEnd = EndSrcBLayoutBuilder.getLineNumber(Env.getSourceManager());
         bool shouldIndent = false;
         bool isAddGroup = true;
         unsigned previousIndentLevel = 0;
@@ -1783,43 +1790,34 @@ class Haikuapi : public TokenAnalyzer {
         FormatToken *NextTok = FirstTok->Next;
         for (FormatToken *Tok = FirstTok->Next; Tok; Tok = Tok->Next) {
           if (!isAddGroup) {
-          const SourceLocation startBraceLoc = Tok->Tok.getLocation();
-          layoutBuilderEnd = startBraceLoc.getLineNumber(Env.getSourceManager());
-          if (Tok->TokenText == ")" || Tok->TokenText == ";") {
-            NextTok = nullptr;
-            shouldIndent = false;
-          } else{
-          NextTok = Tok->Next;
-          }
-          if ( NextTok != nullptr){
-
-            if (NextTok->TokenText == "AddGroup") {
+            const SourceLocation TokSrcLoc = Tok->Tok.getLocation();
+            BLB_LineEnd = TokSrcLoc.getLineNumber(Env.getSourceManager());
+            if (Tok->TokenText == ")" || Tok->TokenText == ";") {
+              NextTok = nullptr;
               shouldIndent = false;
-            }
           }
+          else
+            NextTok = Tok->Next;
 
-          if (layoutBuilderStart != layoutBuilderEnd && previousIndentLevel + 8 != Tok->OriginalColumn ) {
+          if (BLB_LineStart != BLB_LineEnd && previousIndentLevel + 8 != Tok->OriginalColumn )
             shouldIndent = false;
-          }
 
-          if (layoutBuilderStart != layoutBuilderEnd && shouldIndent) {
-          Done.insert(startBraceLoc);
-            cantFail(Result.add(tooling::Replacement(Env.getSourceManager(),
-                                                   startBraceLoc, 0, "    ")));
-            layoutBuilderStart = startBraceLoc.getLineNumber(Env.getSourceManager());
+          if (BLB_LineStart != BLB_LineEnd && shouldIndent) {
+            Done.insert(TokSrcLoc);
+              cantFail(Result.add(tooling::Replacement(Env.getSourceManager(),
+                                                   TokSrcLoc, 0, "    ")));
+            BLB_LineStart = TokSrcLoc.getLineNumber(Env.getSourceManager());
           }
           if (Tok->TokenText == ")" && NextTok == nullptr)
             shouldIndent = true;
-         else if ( Tok->TokenText == "End") {
-          shouldIndent = false;
+          else if ( Tok->TokenText == "End")
+            shouldIndent = false;
         }
-        }
-        if (Tok->TokenText == "AddGroup") {
-              isAddGroup = false;
-            }
-        if (Tok->TokenText == "End") {
-              isAddGroup = true;
-            }
+        if (Tok->TokenText == "AddGroup")
+          isAddGroup = false;
+
+        if (Tok->TokenText == "End")
+          isAddGroup = true;
         }
       }
     }
@@ -2859,7 +2857,7 @@ reformat(const FormatStyle &Style, StringRef Code,
       });
     
     Passes.emplace_back([&](const Environment &Env) { 
-      return Haikuapi(Env, Expanded).process();
+      return LayoutBuilderFormatter(Env, Expanded).process();
     });
   }
 

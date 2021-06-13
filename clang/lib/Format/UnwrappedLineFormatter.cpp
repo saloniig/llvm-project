@@ -1121,8 +1121,11 @@ unsigned UnwrappedLineFormatter::format(
       }
     }
 
-    if (TheLine.First->TokenText == "BLayoutBuilder") {
-      shouldFormatComment = false;
+    for (FormatToken *Tok = TheLine.First; Tok; Tok = Tok->Next) {
+        if (Tok->TokenText == "BLayoutBuilder") {
+          shouldFormatComment = false;
+          break;
+        }
     }
 
     if (ShouldFormat && TheLine.Type != LT_Invalid && shouldFormatComment) {
