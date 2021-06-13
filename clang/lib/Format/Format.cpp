@@ -1737,6 +1737,96 @@ private:
   std::set<SourceLocation> Done;
 };
 
+class Haikuapi : public TokenAnalyzer {
+  public:
+  Haikuapi(const Environment &Env, const FormatStyle &Style)
+      : TokenAnalyzer(Env, Style) {}
+
+  std::pair<tooling::Replacements, unsigned>
+  analyze(TokenAnnotator &Annotator,
+          SmallVectorImpl<AnnotatedLine *> &AnnotatedLines,
+          FormatTokenLexer &Tokens) override {
+    tooling::Replacements Result;
+    if (AffectedRangeMgr.computeAffectedLines(AnnotatedLines))
+      haikuapi(AnnotatedLines, Result);
+    return {Result, 0};
+  }
+  
+  private:
+  void haikuapi(SmallVectorImpl<AnnotatedLine *> &Lines,
+                    tooling::Replacements &Result) {
+    for (AnnotatedLine *Line : Lines) {
+      haikuapi(Line->Children, Result);
+
+      // Get first token that is not a comment.
+      const FormatToken *FirstTok = Line->First;
+      if (FirstTok->is(tok::comment))
+        FirstTok = FirstTok->getNextNonComment();
+      // The line is a comment.
+      if (!FirstTok)
+        continue;
+      // Get last token that is not a comment.
+      const FormatToken *LastTok = Line->Last;
+      if (LastTok->is(tok::comment))
+        LastTok = LastTok->getPreviousNonComment();
+
+      // If this token starts a control flow stmt, mark it.
+      if (FirstTok->TokenText == "BLayoutBuilder") {
+        const SourceLocation StartSrcLoc = Line->First->Tok.getLocation();
+        const SourceLocation EndSrcLoc = Line->Last->Tok.getLocation();
+        unsigned layoutBuilderStart = StartSrcLoc.getLineNumber(Env.getSourceManager());
+        unsigned layoutBuilderEnd = EndSrcLoc.getLineNumber(Env.getSourceManager());
+        bool shouldIndent = false;
+        bool isAddGroup = true;
+        unsigned previousIndentLevel = 0;
+
+        FormatToken *NextTok = FirstTok->Next;
+        for (FormatToken *Tok = FirstTok->Next; Tok; Tok = Tok->Next) {
+          if (!isAddGroup) {
+          const SourceLocation startBraceLoc = Tok->Tok.getLocation();
+          layoutBuilderEnd = startBraceLoc.getLineNumber(Env.getSourceManager());
+          if (Tok->TokenText == ")" || Tok->TokenText == ";") {
+            NextTok = nullptr;
+            shouldIndent = false;
+          } else{
+          NextTok = Tok->Next;
+          }
+          if ( NextTok != nullptr){
+
+            if (NextTok->TokenText == "AddGroup") {
+              shouldIndent = false;
+            }
+          }
+
+          if (layoutBuilderStart != layoutBuilderEnd && previousIndentLevel + 8 != Tok->OriginalColumn ) {
+            shouldIndent = false;
+          }
+
+          if (layoutBuilderStart != layoutBuilderEnd && shouldIndent) {
+          Done.insert(startBraceLoc);
+            cantFail(Result.add(tooling::Replacement(Env.getSourceManager(),
+                                                   startBraceLoc, 0, "    ")));
+            layoutBuilderStart = startBraceLoc.getLineNumber(Env.getSourceManager());
+          }
+          if (Tok->TokenText == ")" && NextTok == nullptr)
+            shouldIndent = true;
+         else if ( Tok->TokenText == "End") {
+          shouldIndent = false;
+        }
+        }
+        if (Tok->TokenText == "AddGroup") {
+              isAddGroup = false;
+            }
+        if (Tok->TokenText == "End") {
+              isAddGroup = true;
+            }
+        }
+      }
+    }
+  }
+  std::set<SourceLocation> Done;
+};
+
 /// TrailingCommaInserter inserts trailing commas into container literals.
 /// E.g.:
 ///     const x = [
@@ -2767,6 +2857,10 @@ reformat(const FormatStyle &Style, StringRef Code,
       Passes.emplace_back([&](const Environment &Env) {
         return BracesInserter(Env, Expanded).process();
       });
+    
+    Passes.emplace_back([&](const Environment &Env) { 
+      return Haikuapi(Env, Expanded).process();
+    });
   }
 
   if (Style.Language == FormatStyle::LK_JavaScript &&

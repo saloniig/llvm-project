@@ -66,6 +66,13 @@ void SourceLocation::print(raw_ostream &OS, const SourceManager &SM)const{
   OS << '>';
 }
 
+unsigned SourceLocation::getLineNumber(const SourceManager &SM)const{
+  PresumedLoc PLoc = SM.getPresumedLoc(*this);
+  // print(llvm::errs(), SM);
+  // llvm::errs() << '\n';
+  return PLoc.getLine();
+}
+
 LLVM_DUMP_METHOD std::string
 SourceLocation::printToString(const SourceManager &SM) const {
   std::string S;

@@ -1121,6 +1121,10 @@ unsigned UnwrappedLineFormatter::format(
       }
     }
 
+    if (TheLine.First->TokenText == "BLayoutBuilder") {
+      shouldFormatComment = false;
+    }
+
     if (ShouldFormat && TheLine.Type != LT_Invalid && shouldFormatComment) {
       if (!DryRun) {
         bool LastLine = Line->First->is(tok::eof);

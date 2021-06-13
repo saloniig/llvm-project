@@ -176,6 +176,7 @@ public:
   }
 
   void print(raw_ostream &OS, const SourceManager &SM) const;
+  unsigned getLineNumber(const SourceManager &SM) const;
   std::string printToString(const SourceManager &SM) const;
   void dump(const SourceManager &SM) const;
 };
