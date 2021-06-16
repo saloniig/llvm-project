@@ -1664,6 +1664,7 @@ private:
 
   bool BinPackInconclusiveFunctions;
   FormattingAttemptStatus *Status;
+  std::set<SourceLocation> Done;
 };
 
 class BracesInserter : public TokenAnalyzer {
@@ -1753,6 +1754,7 @@ class LayoutBuilderFormatter : public TokenAnalyzer {
   }
   
   private:
+  std::set<SourceLocation> Done;
   void layoutbuilderformatter(SmallVectorImpl<AnnotatedLine *> &Lines,
                     tooling::Replacements &Result) {
     for (AnnotatedLine *Line : Lines) {
@@ -1784,13 +1786,22 @@ class LayoutBuilderFormatter : public TokenAnalyzer {
         unsigned BLB_LineStart = StartSrcBLayoutBuilder.getLineNumber(Env.getSourceManager());
         unsigned BLB_LineEnd = EndSrcBLayoutBuilder.getLineNumber(Env.getSourceManager());
         bool shouldIndent = false;
-        bool isAddGroup = true;
+        bool isAddGroup = false;
+        bool isEnd = false;
         unsigned previousIndentLevel = 0;
 
         FormatToken *NextTok = FirstTok->Next;
-        for (FormatToken *Tok = FirstTok->Next; Tok; Tok = Tok->Next) {
+        for (FormatToken *Tok = Line->First; Tok; Tok = Tok->Next) {
+          const SourceLocation TokSrcLoc = Tok->Tok.getLocation();
+
+           if (Tok->TokenText == "AddGroup") {
+          isAddGroup = false;
+          isEnd = false;
+          previousIndentLevel = Tok->OriginalColumn;
+          BLB_LineStart = TokSrcLoc.getLineNumber(Env.getSourceManager());
+        }
+        
           if (!isAddGroup) {
-            const SourceLocation TokSrcLoc = Tok->Tok.getLocation();
             BLB_LineEnd = TokSrcLoc.getLineNumber(Env.getSourceManager());
             if (Tok->TokenText == ")" || Tok->TokenText == ";") {
               NextTok = nullptr;
@@ -1799,30 +1810,40 @@ class LayoutBuilderFormatter : public TokenAnalyzer {
           else
             NextTok = Tok->Next;
 
-          if (BLB_LineStart != BLB_LineEnd && previousIndentLevel + 8 != Tok->OriginalColumn )
-            shouldIndent = false;
-
           if (BLB_LineStart != BLB_LineEnd && shouldIndent) {
             Done.insert(TokSrcLoc);
-              cantFail(Result.add(tooling::Replacement(Env.getSourceManager(),
-                                                   TokSrcLoc, 0, "    ")));
-            BLB_LineStart = TokSrcLoc.getLineNumber(Env.getSourceManager());
+            if (isEnd) {
+              for (unsigned i = Tok->OriginalColumn; i < previousIndentLevel-1; i=i+4) {
+                cantFail(Result.add(tooling::Replacement(Env.getSourceManager(),
+                                                   TokSrcLoc, 0, "\t")));
+              }
+            } else if (Tok->TokenText == ".") {
+                for (unsigned i = Tok->OriginalColumn; i < previousIndentLevel + 3; i=i+4) {
+                  cantFail(Result.add(tooling::Replacement(Env.getSourceManager(),
+                                                   TokSrcLoc, 0, "\t")));
+              }
+            }
           }
           if (Tok->TokenText == ")" && NextTok == nullptr)
             shouldIndent = true;
-          else if ( Tok->TokenText == "End")
-            shouldIndent = false;
+          else if (NextTok != nullptr)
+            if ( NextTok->TokenText == "End")
+              shouldIndent = true;
+          }
+        if (NextTok != nullptr)
+          if (NextTok->TokenText == "End") {
+            isAddGroup = true;
+            isEnd = true;
+            previousIndentLevel = Tok->OriginalColumn - 4;
         }
-        if (Tok->TokenText == "AddGroup")
-          isAddGroup = false;
 
-        if (Tok->TokenText == "End")
-          isAddGroup = true;
+          else if (NextTok != nullptr)
+            if ( NextTok->TokenText == "End")
+              shouldIndent = true;
         }
       }
     }
   }
-  std::set<SourceLocation> Done;
 };
 
 /// TrailingCommaInserter inserts trailing commas into container literals.
@@ -2856,9 +2877,6 @@ reformat(const FormatStyle &Style, StringRef Code,
         return BracesInserter(Env, Expanded).process();
       });
     
-    Passes.emplace_back([&](const Environment &Env) { 
-      return LayoutBuilderFormatter(Env, Expanded).process();
-    });
   }
 
   if (Style.Language == FormatStyle::LK_JavaScript &&
@@ -2875,6 +2893,10 @@ reformat(const FormatStyle &Style, StringRef Code,
       Style.InsertTrailingCommas == FormatStyle::TCS_Wrapped)
     Passes.emplace_back([&](const Environment &Env) {
       return TrailingCommaInserter(Env, Expanded).process();
+    });
+
+  Passes.emplace_back([&](const Environment &Env) { 
+      return LayoutBuilderFormatter(Env, Expanded).process();
     });
 
   auto Env =

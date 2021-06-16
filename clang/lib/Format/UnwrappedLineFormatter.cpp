@@ -1120,14 +1120,6 @@ unsigned UnwrappedLineFormatter::format(
         shouldFormatComment = false;
       }
     }
-
-    for (FormatToken *Tok = TheLine.First; Tok; Tok = Tok->Next) {
-        if (Tok->TokenText == "BLayoutBuilder") {
-          shouldFormatComment = false;
-          break;
-        }
-    }
-
     if (ShouldFormat && TheLine.Type != LT_Invalid && shouldFormatComment) {
       if (!DryRun) {
         bool LastLine = Line->First->is(tok::eof);
