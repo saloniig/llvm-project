@@ -1786,60 +1786,52 @@ class LayoutBuilderFormatter : public TokenAnalyzer {
         unsigned BLB_LineStart = StartSrcBLayoutBuilder.getLineNumber(Env.getSourceManager());
         unsigned BLB_LineEnd = EndSrcBLayoutBuilder.getLineNumber(Env.getSourceManager());
         bool shouldIndent = false;
-        bool isAddGroup = false;
-        bool isEnd = false;
-        unsigned previousIndentLevel = 0;
+        unsigned indentLevel = 0;
 
         FormatToken *NextTok = FirstTok->Next;
         for (FormatToken *Tok = Line->First; Tok; Tok = Tok->Next) {
+          // Get the line number of current token
           const SourceLocation TokSrcLoc = Tok->Tok.getLocation();
+          BLB_LineEnd = TokSrcLoc.getLineNumber(Env.getSourceManager());
 
-           if (Tok->TokenText == "AddGroup") {
-          isAddGroup = false;
-          isEnd = false;
-          previousIndentLevel = Tok->OriginalColumn;
-          BLB_LineStart = TokSrcLoc.getLineNumber(Env.getSourceManager());
-        }
-        
-          if (!isAddGroup) {
-            BLB_LineEnd = TokSrcLoc.getLineNumber(Env.getSourceManager());
-            if (Tok->TokenText == ")" || Tok->TokenText == ";") {
+          // If it's the end of line then it should not indent it
+          if (Tok->TokenText == ")" || Tok->TokenText == ";") {
               NextTok = nullptr;
               shouldIndent = false;
           }
-          else
-            NextTok = Tok->Next;
 
-          if (BLB_LineStart != BLB_LineEnd && shouldIndent) {
-            Done.insert(TokSrcLoc);
-            if (isEnd) {
-              for (unsigned i = Tok->OriginalColumn; i < previousIndentLevel-1; i=i+4) {
-                cantFail(Result.add(tooling::Replacement(Env.getSourceManager(),
+          if (shouldIndent && BLB_LineStart != BLB_LineEnd) {
+            for (unsigned i = 0; i < indentLevel; i++) {
+              cantFail(Result.add(tooling::Replacement(Env.getSourceManager(),
                                                    TokSrcLoc, 0, "\t")));
-              }
-            } else if (Tok->TokenText == ".") {
-                for (unsigned i = Tok->OriginalColumn; i < previousIndentLevel + 3; i=i+4) {
-                  cantFail(Result.add(tooling::Replacement(Env.getSourceManager(),
-                                                   TokSrcLoc, 0, "\t")));
-              }
+            }
+            // After indenting the line, save the line number and then
+            // use it to compare with the current token's line number and
+            // if they do not match then it means that there is a new line
+            // now it should be indented
+            BLB_LineStart = TokSrcLoc.getLineNumber(Env.getSourceManager());
+          }
+          NextTok = Tok->Next;
+          if (NextTok != nullptr) {
+            if (NextTok->TokenText == "End") {
+              // If there is a End() then indent level should be decreased
+              indentLevel--;
             }
           }
-          if (Tok->TokenText == ")" && NextTok == nullptr)
+          if(Tok->TokenText == ".") {
+            shouldIndent = false;
+          } else {
             shouldIndent = true;
-          else if (NextTok != nullptr)
-            if ( NextTok->TokenText == "End")
-              shouldIndent = true;
           }
-        if (NextTok != nullptr)
-          if (NextTok->TokenText == "End") {
-            isAddGroup = true;
-            isEnd = true;
-            previousIndentLevel = Tok->OriginalColumn - 4;
-        }
-
-          else if (NextTok != nullptr)
-            if ( NextTok->TokenText == "End")
-              shouldIndent = true;
+          if (NextTok != nullptr) {
+            // If current token is . and next is AddGroup
+            // then it should not indent but it's child should be indented
+            if(NextTok->TokenText == "AddGroup") {
+              shouldIndent = false;
+              indentLevel++;
+              BLB_LineStart = TokSrcLoc.getLineNumber(Env.getSourceManager());
+            }
+          }
         }
       }
     }
