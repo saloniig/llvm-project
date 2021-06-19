@@ -1787,6 +1787,12 @@ class LayoutBuilderFormatter : public TokenAnalyzer {
         unsigned BLB_LineEnd = EndSrcBLayoutBuilder.getLineNumber(Env.getSourceManager());
         bool shouldIndent = false;
         unsigned indentLevel = 0;
+        // It tells if the line should be breaked after it has been indented
+        bool shouldBreak = false;
+        // These are used to calculate the indent that should be done
+        // after the line is breaked
+        unsigned calculateBreak = 0;
+        unsigned value = 0;
 
         FormatToken *NextTok = FirstTok->Next;
         for (FormatToken *Tok = Line->First; Tok; Tok = Tok->Next) {
@@ -1809,7 +1815,22 @@ class LayoutBuilderFormatter : public TokenAnalyzer {
             // use it to compare with the current token's line number and
             // if they do not match then it means that there is a new line
             // now it should be indented
+            shouldBreak = true;
             BLB_LineStart = TokSrcLoc.getLineNumber(Env.getSourceManager());
+            value = Tok->OriginalColumn;
+          }
+          // Checking, if the line will more than 80 columns if true then it should be breaked
+          if (Tok->OriginalColumn + Tok->TokenText.size() + 4*calculateBreak >= 80 && shouldBreak && calculateBreak<6) {
+            const SourceLocation PreviousTokSrcLoc = Tok->Tok.getLocation();
+            std::string newLine;
+            newLine = "\n";
+            for (unsigned j = 0; j<(calculateBreak+(value/2)); j++) {
+              newLine += "\t";
+            }
+            cantFail(Result.add(tooling::Replacement(Env.getSourceManager(),
+                                                PreviousTokSrcLoc, 0, newLine)));
+
+            shouldBreak = false;
           }
           NextTok = Tok->Next;
           if (NextTok != nullptr) {
@@ -1832,6 +1853,7 @@ class LayoutBuilderFormatter : public TokenAnalyzer {
               BLB_LineStart = TokSrcLoc.getLineNumber(Env.getSourceManager());
             }
           }
+          calculateBreak = indentLevel;
         }
       }
     }
