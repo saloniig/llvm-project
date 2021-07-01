@@ -430,6 +430,26 @@ struct FormatStyle {
   /// If ``true``, comments indent can be one level more
   IndentComment AllowCommentsToIndentOneLevelMore;
 
+  // Allow break after return
+  enum BreakForReturn {
+    /// Break after return with one parameter
+    /// \code
+    ///   void
+    ///    foo::foo(a)
+    ///       // It should start from new line
+    /// \endcode
+    BFR_True,
+     ///  Don't break after return with one parameter
+    /// \code
+    ///   void foo::foo(a)
+    ///     // It should be in the same line
+    /// \endcode
+    BFR_False
+  };
+
+  /// If ``true``, break after return with one parameter
+  BreakForReturn AllowBreakAfterReturn;
+
  // Allow multiline indentation for loop
   enum IndentMultiLineForLoop {
     /// Keep the indent as it is

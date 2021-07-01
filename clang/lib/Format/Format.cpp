@@ -148,6 +148,13 @@ template <> struct ScalarEnumerationTraits<FormatStyle::IndentComment> {
   }
 };
 
+template <> struct ScalarEnumerationTraits<FormatStyle::BreakForReturn> {
+  static void enumeration(IO &IO, FormatStyle::BreakForReturn &Value) {
+    IO.enumCase(Value, "true", FormatStyle::BFR_True);
+    IO.enumCase(Value, "false", FormatStyle::BFR_False);
+  }
+};
+
 template <> struct ScalarEnumerationTraits<FormatStyle::IndentMultiLineForLoop> {
   static void enumeration(IO &IO, FormatStyle::IndentMultiLineForLoop &Value) {
     IO.enumCase(Value, "true", FormatStyle::IML_True);
@@ -466,6 +473,8 @@ template <> struct MappingTraits<FormatStyle> {
                    Style.AllowShortFunctionsOnASingleLine);
     IO.mapOptional("AllowCommentsToIndentOneLevelMore",
                    Style.AllowCommentsToIndentOneLevelMore);
+    IO.mapOptional("AllowBreakAfterReturn",
+                   Style.AllowBreakAfterReturn);
     IO.mapOptional("AllowShortLambdasOnASingleLine",
                    Style.AllowShortLambdasOnASingleLine);
     IO.mapOptional("AllowShortIfStatementsOnASingleLine",
@@ -1314,6 +1323,7 @@ Style.AccessModifierOffset = -4;
   Style.SpaceAfterTemplateKeyword = false;
   Style.SpaceBeforeParens = FormatStyle::SBPO_Haiku;
   Style.AllowCommentsToIndentOneLevelMore = FormatStyle::IC_True;
+  Style.AllowBreakAfterReturn = FormatStyle::BFR_True;
   Style.AllowIndentMultiLineForLoop = FormatStyle::IML_True;
 
   return Style;
