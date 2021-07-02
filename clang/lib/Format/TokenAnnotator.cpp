@@ -2383,6 +2383,8 @@ static bool isFunctionDeclarationName(const FormatToken &Current,
     return true;
   if (Next->Next == Next->MatchingParen)
     return true; // Empty parentheses.
+  if (Next->is(tok::l_paren) && Next->Next->Next == Next->MatchingParen)
+    return true;
   // If there is an &/&& after the r_paren, this is likely a function.
   if (Next->MatchingParen->Next &&
       Next->MatchingParen->Next->is(TT_PointerOrReference))
@@ -2438,16 +2440,7 @@ void TokenAnnotator::calculateFormattingInformation(AnnotatedLine &Line) {
                               : Line.FirstStartColumn + Line.First->ColumnWidth;
   FormatToken *Current = Line.First->Next;
   bool InFunctionDecl = Line.MightBeFunctionDecl;
-  bool isFirst = true;
   while (Current) {
-    // Sometimes void foo::foo(a) doesn't break and
-    // there is need to set type as TT_FunctionDeclarationName
-    if(!Current->IsFirst && isFirst && Style.AllowBreakAfterReturn == FormatStyle::BFR_True) {
-    if (Current->is(TT_StartOfName)) {
-      Current->setType(TT_FunctionDeclarationName);
-    }
-      isFirst = false;
-  }
     if (isFunctionDeclarationName(*Current, Line))
       Current->setType(TT_FunctionDeclarationName);
     if (Current->is(TT_LineComment)) {
