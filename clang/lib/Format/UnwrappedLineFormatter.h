@@ -42,6 +42,13 @@ public:
                   bool FixBadIndentation = false, unsigned FirstStartColumn = 0,
                   unsigned NextStartColumn = 0, unsigned LastStartColumn = 0);
 
+  unsigned formatHaiku(const SmallVectorImpl<AnnotatedLine *> &Lines,
+                       const SourceManager &SourceMgr, bool DryRun = false,
+                       int AdditionalIndent = 0, bool FixBadIndentation = false,
+                       unsigned FirstStartColumn = 0,
+                       unsigned NextStartColumn = 0,
+                       unsigned LastStartColumn = 0);
+
 private:
   /// Add a new line and the required indent before the first Token
   /// of the \c UnwrappedLine if there was no structural parsing error.

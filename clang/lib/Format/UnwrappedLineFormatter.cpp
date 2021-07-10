@@ -875,6 +875,37 @@ public:
     }
     return Penalty;
   }
+
+  unsigned formatLineForBLayout(const AnnotatedLine &Line, unsigned ColumnLimit,
+                                const SourceManager &SourceMgr,
+                                unsigned FirstIndent, unsigned FirstStartColumn,
+                                bool DryRun) {
+    unsigned Penalty = 0;
+    LineState State =
+        Indenter->getInitialState(FirstIndent, FirstStartColumn, &Line, DryRun);
+    bool Newline = false;
+    while (State.NextToken) {
+      if (State.NextToken->OriginalColumn + State.NextToken->TokenText.size() >=
+              ColumnLimit &&
+          State.NextToken->Previous->OriginalColumn +
+                  State.NextToken->Previous->TokenText.size() <
+              ColumnLimit) {
+        Newline = true;
+      }
+      if (Newline) {
+        FormatToken *nextToken = State.NextToken->Next;
+        while (State.NextToken->OriginalColumn < nextToken->OriginalColumn) {
+          nextToken = nextToken->Next;
+        }
+        State.Stack.back().Indent = nextToken->OriginalColumn + 4;
+        Penalty = Indenter->addTokenOnNewLineForHaiku(State, DryRun);
+      }
+
+      Indenter->moveStateToNextToken(State, DryRun, Newline);
+      Newline = false;
+    }
+    return Penalty;
+  }
 };
 
 /// Finds the best way to break lines.
@@ -1055,6 +1086,41 @@ private:
 };
 
 } // anonymous namespace
+
+unsigned UnwrappedLineFormatter::formatHaiku(
+    const SmallVectorImpl<AnnotatedLine *> &Lines,
+    const SourceManager &SourceMgr, bool DryRun, int AdditionalIndent,
+    bool FixBadIndentation, unsigned FirstStartColumn, unsigned NextStartColumn,
+    unsigned LastStartColumn) {
+  LineJoiner Joiner(Style, Keywords, Lines);
+  LevelIndentTracker IndentTracker(Style, Keywords, 0, AdditionalIndent);
+  assert(!Lines.empty());
+  for (AnnotatedLine *Line : Lines) {
+
+    for (FormatToken *Tok = Line->First; Tok; Tok = Tok->Next) {
+      if (Tok->TokenText == "BLayoutBuilder") {
+
+        const AnnotatedLine &TheLine = *Line;
+        const AnnotatedLine *NextLine =
+            Joiner.getNextMergedLine(DryRun, IndentTracker);
+        unsigned ColumnLimit = getColumnLimit(TheLine.InPPDirective, NextLine);
+        unsigned Indent = IndentTracker.getIndent();
+        bool FitsIntoOneLine =
+            TheLine.Last->TotalLength + Indent <= ColumnLimit ||
+            (TheLine.Type == LT_ImportStatement &&
+             (Style.Language != FormatStyle::LK_JavaScript ||
+              !Style.JavaScriptWrapImports)) ||
+            (Style.isCSharp() && TheLine.InPPDirective);
+        if (FitsIntoOneLine)
+          NoLineBreakFormatter(Indenter, Whitespaces, Style, this)
+              .formatLineForBLayout(TheLine, ColumnLimit, SourceMgr,
+                                    NextStartColumn + Indent,
+                                    false ? FirstStartColumn : 0, DryRun);
+      }
+    }
+  }
+  return 0;
+}
 
 unsigned UnwrappedLineFormatter::format(
     const SmallVectorImpl<AnnotatedLine *> &Lines, bool DryRun,

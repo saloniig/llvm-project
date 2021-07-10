@@ -88,11 +88,13 @@ public:
   /// limit, potentially reduced for preprocessor definitions.
   unsigned getColumnLimit(const LineState &State) const;
 
-private:
   /// Mark the next token as consumed in \p State and modify its stacks
   /// accordingly.
   unsigned moveStateToNextToken(LineState &State, bool DryRun, bool Newline);
 
+  unsigned addTokenOnNewLineForHaiku(LineState &State, bool DryRun);
+
+private:
   /// Update 'State' according to the next token's fake left parentheses.
   void moveStatePastFakeLParens(LineState &State, bool Newline);
   /// Update 'State' according to the next token's fake r_parens.

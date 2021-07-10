@@ -40,11 +40,11 @@
 #include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/YAMLTraits.h"
 #include <algorithm>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
-#include<iostream>
 
 #define DEBUG_TYPE "format-formatter"
 
@@ -1738,8 +1738,122 @@ private:
   std::set<SourceLocation> Done;
 };
 
+class MergeOrBreak : public TokenAnalyzer {
+public:
+  MergeOrBreak(const Environment &Env, const FormatStyle &Style)
+      : TokenAnalyzer(Env, Style) {}
+  std::pair<tooling::Replacements, unsigned>
+  analyze(TokenAnnotator &Annotator,
+          SmallVectorImpl<AnnotatedLine *> &AnnotatedLines,
+          FormatTokenLexer &Tokens) override {
+    tooling::Replacements Result;
+    WhitespaceManager Whitespaces(
+        Env.getSourceManager(), Style,
+        Style.DeriveLineEnding
+            ? inputUsesCRLF(
+                  Env.getSourceManager().getBufferData(Env.getFileID()),
+                  Style.UseCRLF)
+            : Style.UseCRLF);
+    ContinuationIndenter Indenter(Style, Tokens.getKeywords(),
+                                  Env.getSourceManager(), Whitespaces, Encoding,
+                                  BinPackInconclusiveFunctions);
+
+    UnwrappedLineFormatter(&Indenter, &Whitespaces, Style, Tokens.getKeywords(),
+                           Env.getSourceManager(), Status)
+        .formatHaiku(AnnotatedLines, Env.getSourceManager(), /*DryRun=*/false,
+                     /*AdditionalIndent=*/0,
+                     /*FixBadIndentation=*/false,
+                     /*FirstStartColumn=*/Env.getFirstStartColumn(),
+                     /*NextStartColumn=*/Env.getNextStartColumn(),
+                     /*LastStartColumn=*/Env.getLastStartColumn());
+    for (const auto &R : Whitespaces.generateReplacements())
+      if (Result.add(R))
+        return std::make_pair(Result, 0);
+    // return 0;
+    return {Result, 0};
+  }
+
+private:
+  std::set<SourceLocation> Done;
+  static bool inputUsesCRLF(StringRef Text, bool DefaultToCRLF) {
+    size_t LF = Text.count('\n');
+    size_t CR = Text.count('\r') * 2;
+    return LF == CR ? DefaultToCRLF : CR > LF;
+  }
+
+  bool
+  hasCpp03IncompatibleFormat(const SmallVectorImpl<AnnotatedLine *> &Lines) {
+    for (const AnnotatedLine *Line : Lines) {
+      if (hasCpp03IncompatibleFormat(Line->Children))
+        return true;
+      for (FormatToken *Tok = Line->First->Next; Tok; Tok = Tok->Next) {
+        if (Tok->WhitespaceRange.getBegin() == Tok->WhitespaceRange.getEnd()) {
+          if (Tok->is(tok::coloncolon) && Tok->Previous->is(TT_TemplateOpener))
+            return true;
+          if (Tok->is(TT_TemplateCloser) &&
+              Tok->Previous->is(TT_TemplateCloser))
+            return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  int countVariableAlignments(const SmallVectorImpl<AnnotatedLine *> &Lines) {
+    int AlignmentDiff = 0;
+    for (const AnnotatedLine *Line : Lines) {
+      AlignmentDiff += countVariableAlignments(Line->Children);
+      for (FormatToken *Tok = Line->First; Tok && Tok->Next; Tok = Tok->Next) {
+        if (!Tok->is(TT_PointerOrReference))
+          continue;
+        bool SpaceBefore =
+            Tok->WhitespaceRange.getBegin() != Tok->WhitespaceRange.getEnd();
+        bool SpaceAfter = Tok->Next->WhitespaceRange.getBegin() !=
+                          Tok->Next->WhitespaceRange.getEnd();
+        if (SpaceBefore && !SpaceAfter)
+          ++AlignmentDiff;
+        if (!SpaceBefore && SpaceAfter)
+          --AlignmentDiff;
+      }
+    }
+    return AlignmentDiff;
+  }
+
+  void
+  deriveLocalStyle(const SmallVectorImpl<AnnotatedLine *> &AnnotatedLines) {
+    bool HasBinPackedFunction = false;
+    bool HasOnePerLineFunction = false;
+    for (unsigned i = 0, e = AnnotatedLines.size(); i != e; ++i) {
+      if (!AnnotatedLines[i]->First->Next)
+        continue;
+      FormatToken *Tok = AnnotatedLines[i]->First->Next;
+      while (Tok->Next) {
+        if (Tok->PackingKind == PPK_BinPacked)
+          HasBinPackedFunction = true;
+        if (Tok->PackingKind == PPK_OnePerLine)
+          HasOnePerLineFunction = true;
+
+        Tok = Tok->Next;
+      }
+    }
+    if (Style.DerivePointerAlignment)
+      Style.PointerAlignment = countVariableAlignments(AnnotatedLines) <= 0
+                                   ? FormatStyle::PAS_Left
+                                   : FormatStyle::PAS_Right;
+    if (Style.Standard == FormatStyle::LS_Auto)
+      Style.Standard = hasCpp03IncompatibleFormat(AnnotatedLines)
+                           ? FormatStyle::LS_Latest
+                           : FormatStyle::LS_Cpp03;
+    BinPackInconclusiveFunctions =
+        HasBinPackedFunction || !HasOnePerLineFunction;
+  }
+
+  bool BinPackInconclusiveFunctions;
+  FormattingAttemptStatus *Status;
+};
+
 class LayoutBuilderFormatter : public TokenAnalyzer {
-  public:
+public:
   LayoutBuilderFormatter(const Environment &Env, const FormatStyle &Style)
       : TokenAnalyzer(Env, Style) {}
 
@@ -1748,115 +1862,105 @@ class LayoutBuilderFormatter : public TokenAnalyzer {
           SmallVectorImpl<AnnotatedLine *> &AnnotatedLines,
           FormatTokenLexer &Tokens) override {
     tooling::Replacements Result;
-    if (AffectedRangeMgr.computeAffectedLines(AnnotatedLines))
-      layoutbuilderformatter(AnnotatedLines, Result);
-    return {Result, 0};
-  }
-  
-  private:
-  std::set<SourceLocation> Done;
-  void layoutbuilderformatter(SmallVectorImpl<AnnotatedLine *> &Lines,
-                    tooling::Replacements &Result) {
-    for (AnnotatedLine *Line : Lines) {
-      layoutbuilderformatter(Line->Children, Result);
+    if (AffectedRangeMgr.computeAffectedLines(AnnotatedLines)) {
+      // layoutbuilderformatter(AnnotatedLines, Result);
 
-      // Get first token that is not a comment.
-      const FormatToken *FirstTok = Line->First;
-      if (FirstTok->is(tok::comment))
-        FirstTok = FirstTok->getNextNonComment();
-      // The line is a comment.
-      if (!FirstTok)
-        continue;
-      // Get last token that is not a comment.
-      const FormatToken *LastTok = Line->Last;
-      if (LastTok->is(tok::comment))
-        LastTok = LastTok->getPreviousNonComment();
+      unsigned Penalty = 0;
 
-      bool isBLayoutBuilder = false;
-      for (FormatToken *Tok = Line->First; Tok; Tok = Tok->Next) {
-        if (Tok->TokenText == "BLayoutBuilder") {
-          isBLayoutBuilder = true;
-          break;
-        }
-      }
+      for (AnnotatedLine *Line : AnnotatedLines) {
+        // layoutbuilderformatter(Line->Children, Result);
 
-      if (isBLayoutBuilder) {
-        const SourceLocation StartSrcBLayoutBuilder = Line->First->Tok.getLocation();
-        const SourceLocation EndSrcBLayoutBuilder = Line->Last->Tok.getLocation();
-        unsigned BLB_LineStart = StartSrcBLayoutBuilder.getLineNumber(Env.getSourceManager());
-        unsigned BLB_LineEnd = EndSrcBLayoutBuilder.getLineNumber(Env.getSourceManager());
-        bool shouldIndent = false;
-        unsigned indentLevel = 0;
-        // It tells if the line should be breaked after it has been indented
-        bool shouldBreak = false;
-        // These are used to calculate the indent that should be done
-        // after the line is breaked
-        unsigned calculateBreak = 0;
-        unsigned value = 0;
+        // Get first token that is not a comment.
+        const FormatToken *FirstTok = Line->First;
+        if (FirstTok->is(tok::comment))
+          FirstTok = FirstTok->getNextNonComment();
+        // The line is a comment.
+        if (!FirstTok)
+          continue;
+        // Get last token that is not a comment.
+        const FormatToken *LastTok = Line->Last;
+        if (LastTok->is(tok::comment))
+          LastTok = LastTok->getPreviousNonComment();
 
-        FormatToken *NextTok = FirstTok->Next;
+        bool isBLayoutBuilder = false;
         for (FormatToken *Tok = Line->First; Tok; Tok = Tok->Next) {
-          // Get the line number of current token
-          const SourceLocation TokSrcLoc = Tok->Tok.getLocation();
-          BLB_LineEnd = TokSrcLoc.getLineNumber(Env.getSourceManager());
+          if (Tok->TokenText == "BLayoutBuilder") {
+            isBLayoutBuilder = true;
+            break;
+          }
+        }
 
-          // If it's the end of line then it should not indent it
-          if (Tok->TokenText == ")" || Tok->TokenText == ";") {
+        if (isBLayoutBuilder) {
+          const SourceLocation StartSrcBLayoutBuilder =
+              Line->First->Tok.getLocation();
+          const SourceLocation EndSrcBLayoutBuilder =
+              Line->Last->Tok.getLocation();
+          unsigned BLB_LineStart =
+              StartSrcBLayoutBuilder.getLineNumber(Env.getSourceManager());
+          unsigned BLB_LineEnd =
+              EndSrcBLayoutBuilder.getLineNumber(Env.getSourceManager());
+          bool shouldIndent = false;
+          unsigned indentLevel = 0;
+          // It tells if the line should be breaked after it has been indented
+          bool shouldBreak = false;
+          // These are used to calculate the indent that should be done
+          // after the line is breaked
+          unsigned calculateBreak = 0;
+          unsigned value = 0;
+
+          FormatToken *NextTok = FirstTok->Next;
+          for (FormatToken *Tok = Line->First; Tok; Tok = Tok->Next) {
+            // Get the line number of current token
+            const SourceLocation TokSrcLoc = Tok->Tok.getLocation();
+            BLB_LineEnd = TokSrcLoc.getLineNumber(Env.getSourceManager());
+
+            // If it's the end of line then it should not indent it
+            if (Tok->TokenText == ")" || Tok->TokenText == ";") {
               NextTok = nullptr;
               shouldIndent = false;
-          }
+            }
 
-          if (shouldIndent && BLB_LineStart != BLB_LineEnd) {
-            for (unsigned i = 0; i < indentLevel; i++) {
-              cantFail(Result.add(tooling::Replacement(Env.getSourceManager(),
-                                                   TokSrcLoc, 0, "\t")));
-            }
-            // After indenting the line, save the line number and then
-            // use it to compare with the current token's line number and
-            // if they do not match then it means that there is a new line
-            // now it should be indented
-            shouldBreak = true;
-            BLB_LineStart = TokSrcLoc.getLineNumber(Env.getSourceManager());
-            value = Tok->OriginalColumn;
-          }
-          // Checking, if the line will more than 80 columns if true then it should be breaked
-          if (Tok->OriginalColumn + Tok->TokenText.size() + 4*calculateBreak >= 80 && shouldBreak && calculateBreak<6) {
-            const SourceLocation PreviousTokSrcLoc = Tok->Tok.getLocation();
-            std::string newLine;
-            newLine = "\n";
-            for (unsigned j = 0; j<(calculateBreak+(value/2)); j++) {
-              newLine += "\t";
-            }
-            cantFail(Result.add(tooling::Replacement(Env.getSourceManager(),
-                                                PreviousTokSrcLoc, 0, newLine)));
-
-            shouldBreak = false;
-          }
-          NextTok = Tok->Next;
-          if (NextTok != nullptr) {
-            if (NextTok->TokenText == "End") {
-              // If there is a End() then indent level should be decreased
-              indentLevel--;
-            }
-          }
-          if(Tok->TokenText == ".") {
-            shouldIndent = false;
-          } else {
-            shouldIndent = true;
-          }
-          if (NextTok != nullptr) {
-            // If current token is . and next is AddGroup
-            // then it should not indent but it's child should be indented
-            if(NextTok->TokenText == "AddGroup") {
-              shouldIndent = false;
-              indentLevel++;
+            if (shouldIndent && BLB_LineStart != BLB_LineEnd) {
+              for (unsigned i = 0; i < indentLevel; i++) {
+                cantFail(Result.add(tooling::Replacement(Env.getSourceManager(),
+                                                         TokSrcLoc, 0, "\t")));
+              }
+              // After indenting the line, save the line number and then
+              // use it to compare with the current token's line number and
+              // if they do not match then it means that there is a new line
+              // now it should be indented
+              shouldBreak = true;
               BLB_LineStart = TokSrcLoc.getLineNumber(Env.getSourceManager());
+              value = Tok->OriginalColumn;
             }
+
+            NextTok = Tok->Next;
+            if (NextTok != nullptr) {
+              if (NextTok->TokenText == "End") {
+                // If there is a End() then indent level should be decreased
+                indentLevel--;
+              }
+            }
+            if (Tok->TokenText == ".") {
+              shouldIndent = false;
+            } else {
+              shouldIndent = true;
+            }
+            if (NextTok != nullptr) {
+              // If current token is . and next is AddGroup
+              // then it should not indent but it's child should be indented
+              if (NextTok->TokenText == "AddGroup") {
+                shouldIndent = false;
+                indentLevel++;
+                BLB_LineStart = TokSrcLoc.getLineNumber(Env.getSourceManager());
+              }
+            }
+            calculateBreak = indentLevel;
           }
-          calculateBreak = indentLevel;
         }
       }
     }
+    return {Result, 0};
   }
 };
 
@@ -2890,7 +2994,6 @@ reformat(const FormatStyle &Style, StringRef Code,
       Passes.emplace_back([&](const Environment &Env) {
         return BracesInserter(Env, Expanded).process();
       });
-    
   }
 
   if (Style.Language == FormatStyle::LK_JavaScript &&
@@ -2912,6 +3015,10 @@ reformat(const FormatStyle &Style, StringRef Code,
   Passes.emplace_back([&](const Environment &Env) { 
       return LayoutBuilderFormatter(Env, Expanded).process();
     });
+
+  Passes.emplace_back([&](const Environment &Env) {
+    return MergeOrBreak(Env, Expanded).process();
+  });
 
   auto Env =
       std::make_unique<Environment>(Code, FileName, Ranges, FirstStartColumn,

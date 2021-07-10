@@ -751,6 +751,11 @@ void ContinuationIndenter::addTokenOnCurrentLine(LineState &State, bool DryRun,
   }
 }
 
+unsigned ContinuationIndenter::addTokenOnNewLineForHaiku(LineState &State,
+                                                         bool DryRun) {
+  return addTokenOnNewLine(State, DryRun);
+}
+
 unsigned ContinuationIndenter::addTokenOnNewLine(LineState &State,
                                                  bool DryRun) {
   FormatToken &Current = *State.NextToken;
