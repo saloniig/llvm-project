@@ -906,6 +906,42 @@ public:
     }
     return Penalty;
   }
+
+  unsigned formatIdentifierForHaiku(const AnnotatedLine &Line,
+                                    unsigned ColumnLimit,
+                                    const SourceManager &SourceMgr,
+                                    unsigned FirstIndent,
+                                    unsigned FirstStartColumn, bool DryRun) {
+    unsigned Penalty = 0;
+    LineState State =
+        Indenter->getInitialState(FirstIndent, FirstStartColumn, &Line, DryRun);
+    bool Newline = false;
+    bool formatCurrentToken = true;
+    while (State.NextToken) {
+      if (State.NextToken->is(tok::l_paren) ||
+          State.NextToken->Previous->TokenText == "~") {
+        formatCurrentToken = false;
+      } else if (State.NextToken->is(tok::r_paren)) {
+        formatCurrentToken = true;
+      }
+      if ((State.NextToken->is(tok::identifier) ||
+           State.NextToken->TokenText == "~") &&
+          formatCurrentToken &&
+          !(State.NextToken->is(TT_FunctionDeclarationName))) {
+        formatChildren(State, /*NewLine=*/false, DryRun, Penalty);
+        unsigned ExtraSpace = 33 - State.NextToken->OriginalColumn;
+        // ExtraSpace = State.NextToken->TokenText == "~" ? ExtraSpace - 1 :
+        // ExtraSpace;
+        Indenter->addTokenToState(State,
+                                  /*Newline=*/State.NextToken->MustBreakBefore,
+                                  DryRun, ExtraSpace);
+        break;
+      } else {
+        Indenter->moveStateToNextToken(State, DryRun, Newline);
+      }
+    }
+    return Penalty;
+  }
 };
 
 /// Finds the best way to break lines.
@@ -1098,13 +1134,12 @@ unsigned UnwrappedLineFormatter::formatHaiku(
   for (AnnotatedLine *Line : Lines) {
 
     for (FormatToken *Tok = Line->First; Tok; Tok = Tok->Next) {
+      const AnnotatedLine &TheLine = *Line;
+      const AnnotatedLine *NextLine =
+          Joiner.getNextMergedLine(DryRun, IndentTracker);
+      unsigned ColumnLimit = getColumnLimit(TheLine.InPPDirective, NextLine);
+      unsigned Indent = IndentTracker.getIndent();
       if (Tok->TokenText == "BLayoutBuilder") {
-
-        const AnnotatedLine &TheLine = *Line;
-        const AnnotatedLine *NextLine =
-            Joiner.getNextMergedLine(DryRun, IndentTracker);
-        unsigned ColumnLimit = getColumnLimit(TheLine.InPPDirective, NextLine);
-        unsigned Indent = IndentTracker.getIndent();
         bool FitsIntoOneLine =
             TheLine.Last->TotalLength + Indent <= ColumnLimit ||
             (TheLine.Type == LT_ImportStatement &&
@@ -1118,6 +1153,44 @@ unsigned UnwrappedLineFormatter::formatHaiku(
                                     false ? FirstStartColumn : 0, DryRun);
       }
     }
+  }
+  return 0;
+}
+
+unsigned UnwrappedLineFormatter::formatHaikuIdentifier(
+    const SmallVectorImpl<AnnotatedLine *> &Lines,
+    const SourceManager &SourceMgr, bool DryRun, int AdditionalIndent,
+    bool FixBadIndentation, unsigned FirstStartColumn, unsigned NextStartColumn,
+    unsigned LastStartColumn) {
+  LineJoiner Joiner(Style, Keywords, Lines);
+  LevelIndentTracker IndentTracker(Style, Keywords, 0, AdditionalIndent);
+  assert(!Lines.empty());
+  bool format_identifier = false;
+  for (AnnotatedLine *Line : Lines) {
+
+    // for (FormatToken *Tok = Line->First; Tok; Tok = Tok->Next) {
+    const AnnotatedLine &TheLine = *Line;
+    const AnnotatedLine *NextLine =
+        Joiner.getNextMergedLine(DryRun, IndentTracker);
+    unsigned ColumnLimit = getColumnLimit(TheLine.InPPDirective, NextLine);
+    unsigned Indent = IndentTracker.getIndent();
+
+    if (Line->First->isOneOf(tok::kw_private, tok::kw_protected,
+                             tok::kw_public)) {
+      format_identifier = true;
+    }
+
+    if (format_identifier) {
+      NoLineBreakFormatter(Indenter, Whitespaces, Style, this)
+          .formatIdentifierForHaiku(TheLine, ColumnLimit, SourceMgr,
+                                    NextStartColumn + Indent,
+                                    false ? FirstStartColumn : 0, DryRun);
+    }
+
+    if (Line->First->is(tok::r_brace) || Line->Last->is(tok::l_brace)) {
+      format_identifier = false;
+    }
+    // }
   }
   return 0;
 }
@@ -1179,7 +1252,8 @@ unsigned UnwrappedLineFormatter::format(
     // FormatToken *previousNonComment = TheLine.First->getPreviousNonComment();
     bool shouldFormatComment = true;
 
-    if (TheLine.First->is(tok::comment) && !FirstLine &&  Style.AllowCommentsToIndentOneLevelMore == FormatStyle::IC_True) {
+    if (TheLine.First->is(tok::comment) && !FirstLine &&
+        Style.AllowCommentsToIndentOneLevelMore == FormatStyle::IC_True) {
       // According to haiku guidelines tab width is 4 hence adding 4
       // And checking it against the OrignalColumn
       if (previousIndentLevel + 4 == TheLine.First->OriginalColumn) {

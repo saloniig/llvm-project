@@ -1852,6 +1852,120 @@ private:
   FormattingAttemptStatus *Status;
 };
 
+class IdentifierFormatter : public TokenAnalyzer {
+public:
+  IdentifierFormatter(const Environment &Env, const FormatStyle &Style)
+      : TokenAnalyzer(Env, Style) {}
+  std::pair<tooling::Replacements, unsigned>
+  analyze(TokenAnnotator &Annotator,
+          SmallVectorImpl<AnnotatedLine *> &AnnotatedLines,
+          FormatTokenLexer &Tokens) override {
+    tooling::Replacements Result;
+    WhitespaceManager Whitespaces(
+        Env.getSourceManager(), Style,
+        Style.DeriveLineEnding
+            ? inputUsesCRLF(
+                  Env.getSourceManager().getBufferData(Env.getFileID()),
+                  Style.UseCRLF)
+            : Style.UseCRLF);
+    ContinuationIndenter Indenter(Style, Tokens.getKeywords(),
+                                  Env.getSourceManager(), Whitespaces, Encoding,
+                                  BinPackInconclusiveFunctions);
+
+    Style.AlignConsecutiveDeclarations = true;
+    UnwrappedLineFormatter(&Indenter, &Whitespaces, Style, Tokens.getKeywords(),
+                           Env.getSourceManager(), Status)
+        .formatHaikuIdentifier(AnnotatedLines, Env.getSourceManager(), /*DryRun=*/false,
+                     /*AdditionalIndent=*/0,
+                     /*FixBadIndentation=*/false,
+                     /*FirstStartColumn=*/Env.getFirstStartColumn(),
+                     /*NextStartColumn=*/Env.getNextStartColumn(),
+                     /*LastStartColumn=*/Env.getLastStartColumn());
+    for (const auto &R : Whitespaces.generateReplacements())
+      if (Result.add(R))
+        return std::make_pair(Result, 0);
+    return {Result, 0};
+  }
+
+private:
+  std::set<SourceLocation> Done;
+  static bool inputUsesCRLF(StringRef Text, bool DefaultToCRLF) {
+    size_t LF = Text.count('\n');
+    size_t CR = Text.count('\r') * 2;
+    return LF == CR ? DefaultToCRLF : CR > LF;
+  }
+
+  bool
+  hasCpp03IncompatibleFormat(const SmallVectorImpl<AnnotatedLine *> &Lines) {
+    for (const AnnotatedLine *Line : Lines) {
+      if (hasCpp03IncompatibleFormat(Line->Children))
+        return true;
+      for (FormatToken *Tok = Line->First->Next; Tok; Tok = Tok->Next) {
+        if (Tok->WhitespaceRange.getBegin() == Tok->WhitespaceRange.getEnd()) {
+          if (Tok->is(tok::coloncolon) && Tok->Previous->is(TT_TemplateOpener))
+            return true;
+          if (Tok->is(TT_TemplateCloser) &&
+              Tok->Previous->is(TT_TemplateCloser))
+            return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  int countVariableAlignments(const SmallVectorImpl<AnnotatedLine *> &Lines) {
+    int AlignmentDiff = 0;
+    for (const AnnotatedLine *Line : Lines) {
+      AlignmentDiff += countVariableAlignments(Line->Children);
+      for (FormatToken *Tok = Line->First; Tok && Tok->Next; Tok = Tok->Next) {
+        if (!Tok->is(TT_PointerOrReference))
+          continue;
+        bool SpaceBefore =
+            Tok->WhitespaceRange.getBegin() != Tok->WhitespaceRange.getEnd();
+        bool SpaceAfter = Tok->Next->WhitespaceRange.getBegin() !=
+                          Tok->Next->WhitespaceRange.getEnd();
+        if (SpaceBefore && !SpaceAfter)
+          ++AlignmentDiff;
+        if (!SpaceBefore && SpaceAfter)
+          --AlignmentDiff;
+      }
+    }
+    return AlignmentDiff;
+  }
+
+  void
+  deriveLocalStyle(const SmallVectorImpl<AnnotatedLine *> &AnnotatedLines) {
+    bool HasBinPackedFunction = false;
+    bool HasOnePerLineFunction = false;
+    for (unsigned i = 0, e = AnnotatedLines.size(); i != e; ++i) {
+      if (!AnnotatedLines[i]->First->Next)
+        continue;
+      FormatToken *Tok = AnnotatedLines[i]->First->Next;
+      while (Tok->Next) {
+        if (Tok->PackingKind == PPK_BinPacked)
+          HasBinPackedFunction = true;
+        if (Tok->PackingKind == PPK_OnePerLine)
+          HasOnePerLineFunction = true;
+
+        Tok = Tok->Next;
+      }
+    }
+    if (Style.DerivePointerAlignment)
+      Style.PointerAlignment = countVariableAlignments(AnnotatedLines) <= 0
+                                   ? FormatStyle::PAS_Left
+                                   : FormatStyle::PAS_Right;
+    if (Style.Standard == FormatStyle::LS_Auto)
+      Style.Standard = hasCpp03IncompatibleFormat(AnnotatedLines)
+                           ? FormatStyle::LS_Latest
+                           : FormatStyle::LS_Cpp03;
+    BinPackInconclusiveFunctions =
+        HasBinPackedFunction || !HasOnePerLineFunction;
+  }
+
+  bool BinPackInconclusiveFunctions;
+  FormattingAttemptStatus *Status;
+};
+
 class LayoutBuilderFormatter : public TokenAnalyzer {
 public:
   LayoutBuilderFormatter(const Environment &Env, const FormatStyle &Style)
@@ -3018,6 +3132,10 @@ reformat(const FormatStyle &Style, StringRef Code,
 
   Passes.emplace_back([&](const Environment &Env) {
     return MergeOrBreak(Env, Expanded).process();
+  });
+
+  Passes.emplace_back([&](const Environment &Env) {
+    return IdentifierFormatter(Env, Expanded).process();
   });
 
   auto Env =
