@@ -782,7 +782,9 @@ unsigned ContinuationIndenter::addTokenOnNewLine(LineState &State,
     Penalty += Style.PenaltyBreakFirstLessLess;
 
   State.Column = getNewLineColumn(State);
-
+  if (State.Line->startsWith(tok::kw_for) && PreviousNonComment &&
+      PreviousNonComment->is(tok::semi))
+    State.Column -= State.Column % 4;
   // Indent nested blocks relative to this column, unless in a very specific
   // JavaScript special case where:
   //
