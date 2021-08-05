@@ -876,70 +876,50 @@ public:
     return Penalty;
   }
 
+  // Following function is used to break the line after it has been indented
   unsigned formatLineForBLayout(const AnnotatedLine &Line, unsigned ColumnLimit,
                                 const SourceManager &SourceMgr,
                                 unsigned FirstIndent, unsigned FirstStartColumn,
-                                bool DryRun) {
+                                bool DryRun, bool isIndentTrue) {
     unsigned Penalty = 0;
     LineState State =
         Indenter->getInitialState(FirstIndent, FirstStartColumn, &Line, DryRun);
     bool Newline = false;
-    while (State.NextToken) {
-      if (State.NextToken->OriginalColumn + State.NextToken->TokenText.size() >=
-              ColumnLimit &&
-          State.NextToken->Previous->OriginalColumn +
-                  State.NextToken->Previous->TokenText.size() <
-              ColumnLimit) {
-        Newline = true;
-      }
-      if (Newline) {
-        FormatToken *nextToken = State.NextToken->Next;
-        while (State.NextToken->OriginalColumn < nextToken->OriginalColumn) {
-          nextToken = nextToken->Next;
-        }
-        State.Stack.back().Indent = nextToken->OriginalColumn + 4;
-        Penalty = Indenter->addTokenOnNewLineForHaiku(State, DryRun);
-      }
+    FormatToken *CommaToken = nullptr;
+    FormatToken *BreakToken = nullptr;
 
-      Indenter->moveStateToNextToken(State, DryRun, Newline);
-      Newline = false;
-    }
-    return Penalty;
-  }
-
-  unsigned formatIdentifierForHaiku(const AnnotatedLine &Line,
-                                    unsigned ColumnLimit,
-                                    const SourceManager &SourceMgr,
-                                    unsigned FirstIndent,
-                                    unsigned FirstStartColumn, bool DryRun) {
-    unsigned Penalty = 0;
-    LineState State =
-        Indenter->getInitialState(FirstIndent, FirstStartColumn, &Line, DryRun);
-    bool Newline = false;
-    bool formatCurrentToken = true;
-    while (State.NextToken) {
-      if (State.NextToken->is(tok::l_paren) ||
-          State.NextToken->Previous->TokenText == "~") {
-        formatCurrentToken = false;
-      } else if (State.NextToken->is(tok::r_paren)) {
-        formatCurrentToken = true;
+    // Breaking after comma is appereciated so we keep a track of comma and (
+    // and then we break it after that
+    for (FormatToken *Tok = Line.First; Tok && Tok->Next; Tok = Tok->Next) {
+      if ((CommaToken == nullptr && Tok->is(tok::l_brace)) ||
+          Tok->is(tok::comma)) {
+        CommaToken = Tok;
       }
-      if ((State.NextToken->is(tok::identifier) ||
-           State.NextToken->TokenText == "~") &&
-          formatCurrentToken &&
-          !(State.NextToken->is(TT_FunctionDeclarationName))) {
-        formatChildren(State, /*NewLine=*/false, DryRun, Penalty);
-        unsigned ExtraSpace = 33 - State.NextToken->OriginalColumn;
-        // ExtraSpace = State.NextToken->TokenText == "~" ? ExtraSpace - 1 :
-        // ExtraSpace;
-        Indenter->addTokenToState(State,
-                                  /*Newline=*/State.NextToken->MustBreakBefore,
-                                  DryRun, ExtraSpace);
+      if (Tok->OriginalColumn + Tok->TokenText.size() >= ColumnLimit) {
+        BreakToken = Tok;
         break;
-      } else {
-        Indenter->moveStateToNextToken(State, DryRun, Newline);
       }
     }
+    // In above for loop we select a token where it should break
+    // In the below loop we move state to that token where it should break
+    while (State.NextToken != CommaToken && CommaToken) {
+      Indenter->moveStateToNextToken(State, DryRun, Newline);
+    }
+    Indenter->moveStateToNextToken(State, DryRun, Newline);
+    if (isIndentTrue) {
+      State.Stack.back().Indent = 36;
+    } else {
+      FormatToken *nextToken = State.NextToken->Next;
+      while (State.NextToken->OriginalColumn < nextToken->OriginalColumn) {
+        if (nextToken->Next) {
+          nextToken = nextToken->Next;
+        } else {
+          break;
+        }
+      }
+      State.Stack.back().Indent = nextToken->OriginalColumn + 4;
+    }
+    Penalty = Indenter->addTokenOnNewLineForHaiku(State, DryRun);
     return Penalty;
   }
 };
@@ -1131,66 +1111,38 @@ unsigned UnwrappedLineFormatter::formatHaiku(
   LineJoiner Joiner(Style, Keywords, Lines);
   LevelIndentTracker IndentTracker(Style, Keywords, 0, AdditionalIndent);
   assert(!Lines.empty());
+  bool format_identifier = false;
   for (AnnotatedLine *Line : Lines) {
-
-    for (FormatToken *Tok = Line->First; Tok; Tok = Tok->Next) {
+    if (!Line->First->is(tok::comment)) {
       const AnnotatedLine &TheLine = *Line;
       const AnnotatedLine *NextLine =
           Joiner.getNextMergedLine(DryRun, IndentTracker);
       unsigned ColumnLimit = getColumnLimit(TheLine.InPPDirective, NextLine);
       unsigned Indent = IndentTracker.getIndent();
-      if (Tok->TokenText == "BLayoutBuilder") {
-        bool FitsIntoOneLine =
-            TheLine.Last->TotalLength + Indent <= ColumnLimit ||
-            (TheLine.Type == LT_ImportStatement &&
-             (Style.Language != FormatStyle::LK_JavaScript ||
-              !Style.JavaScriptWrapImports)) ||
-            (Style.isCSharp() && TheLine.InPPDirective);
-        if (FitsIntoOneLine)
-          NoLineBreakFormatter(Indenter, Whitespaces, Style, this)
-              .formatLineForBLayout(TheLine, ColumnLimit, SourceMgr,
-                                    NextStartColumn + Indent,
-                                    false ? FirstStartColumn : 0, DryRun);
+      const SourceLocation FirstTokLoc = Line->First->Tok.getLocation();
+      unsigned FirstTokLineNumber = FirstTokLoc.getLineNumber(SourceMgr);
+      const SourceLocation LastTokLoc = Line->Last->Tok.getLocation();
+      unsigned LastTokLineNumber = LastTokLoc.getLineNumber(SourceMgr);
+      if (Line->Last->OriginalColumn >= 80) {
+        NoLineBreakFormatter(Indenter, Whitespaces, Style, this)
+            .formatLineForBLayout(TheLine, ColumnLimit, SourceMgr,
+                                  NextStartColumn + Indent,
+                                  false ? FirstStartColumn : 0, DryRun, true);
+      } else if (FirstTokLineNumber != LastTokLineNumber) {
+        FormatToken *FirstToken = Line->First;
+        while (FirstToken->Next) {
+          if (FirstToken->OriginalColumn + FirstToken->TokenText.size() >= 80 &&
+              FirstToken->TokenText.size() != 1) {
+            NoLineBreakFormatter(Indenter, Whitespaces, Style, this)
+                .formatLineForBLayout(
+                    TheLine, ColumnLimit, SourceMgr, NextStartColumn + Indent,
+                    false ? FirstStartColumn : 0, DryRun, false);
+            break;
+          }
+          FirstToken = FirstToken->Next;
+        }
       }
     }
-  }
-  return 0;
-}
-
-unsigned UnwrappedLineFormatter::formatHaikuIdentifier(
-    const SmallVectorImpl<AnnotatedLine *> &Lines,
-    const SourceManager &SourceMgr, bool DryRun, int AdditionalIndent,
-    bool FixBadIndentation, unsigned FirstStartColumn, unsigned NextStartColumn,
-    unsigned LastStartColumn) {
-  LineJoiner Joiner(Style, Keywords, Lines);
-  LevelIndentTracker IndentTracker(Style, Keywords, 0, AdditionalIndent);
-  assert(!Lines.empty());
-  bool format_identifier = false;
-  for (AnnotatedLine *Line : Lines) {
-
-    // for (FormatToken *Tok = Line->First; Tok; Tok = Tok->Next) {
-    const AnnotatedLine &TheLine = *Line;
-    const AnnotatedLine *NextLine =
-        Joiner.getNextMergedLine(DryRun, IndentTracker);
-    unsigned ColumnLimit = getColumnLimit(TheLine.InPPDirective, NextLine);
-    unsigned Indent = IndentTracker.getIndent();
-
-    if (Line->First->isOneOf(tok::kw_private, tok::kw_protected,
-                             tok::kw_public)) {
-      format_identifier = true;
-    }
-
-    if (format_identifier) {
-      NoLineBreakFormatter(Indenter, Whitespaces, Style, this)
-          .formatIdentifierForHaiku(TheLine, ColumnLimit, SourceMgr,
-                                    NextStartColumn + Indent,
-                                    false ? FirstStartColumn : 0, DryRun);
-    }
-
-    if (Line->First->is(tok::r_brace) || Line->Last->is(tok::l_brace)) {
-      format_identifier = false;
-    }
-    // }
   }
   return 0;
 }

@@ -148,7 +148,8 @@ template <> struct ScalarEnumerationTraits<FormatStyle::IndentComment> {
   }
 };
 
-template <> struct ScalarEnumerationTraits<FormatStyle::IndentMultiLineForLoop> {
+template <>
+struct ScalarEnumerationTraits<FormatStyle::IndentMultiLineForLoop> {
   static void enumeration(IO &IO, FormatStyle::IndentMultiLineForLoop &Value) {
     IO.enumCase(Value, "true", FormatStyle::IML_True);
     IO.enumCase(Value, "false", FormatStyle::IML_False);
@@ -188,7 +189,6 @@ template <> struct ScalarEnumerationTraits<FormatStyle::BraceInsertionStyle> {
     IO.enumCase(Value, "WrapLikely", FormatStyle::BIS_WrapLikely);
   }
 };
-
 
 template <> struct ScalarEnumerationTraits<FormatStyle::BinaryOperatorStyle> {
   static void enumeration(IO &IO, FormatStyle::BinaryOperatorStyle &Value) {
@@ -558,7 +558,7 @@ template <> struct MappingTraits<FormatStyle> {
     IO.mapOptional("IndentWidth", Style.IndentWidth);
     IO.mapOptional("IndentWrappedFunctionNames",
                    Style.IndentWrappedFunctionNames);
-    IO.mapOptional("InsertBraces", Style.InsertBraces);  
+    IO.mapOptional("InsertBraces", Style.InsertBraces);
     IO.mapOptional("InsertTrailingCommas", Style.InsertTrailingCommas);
     IO.mapOptional("JavaImportGroups", Style.JavaImportGroups);
     IO.mapOptional("JavaScriptQuotes", Style.JavaScriptQuotes);
@@ -1275,7 +1275,7 @@ FormatStyle getMicrosoftStyle(FormatStyle::LanguageKind Language) {
 
 FormatStyle getHaikuStyle() {
   FormatStyle Style = getLLVMStyle();
-Style.AccessModifierOffset = -4;
+  Style.AccessModifierOffset = -4;
   Style.AlignEscapedNewlines = FormatStyle::ENAS_DontAlign;
   Style.AlignAfterOpenBracket = FormatStyle::BAS_DontAlign;
   Style.AlignOperands = FormatStyle::OAS_DontAlign;
@@ -1719,8 +1719,7 @@ private:
         if (Done.count(startBraceLoc))
           break;
 
-        if (Style.InsertBraces ==
-                FormatStyle::BIS_Always ||
+        if (Style.InsertBraces == FormatStyle::BIS_Always ||
             Line->Last->OriginalColumn > Style.ColumnLimit) {
           Done.insert(startBraceLoc);
           cantFail(Result.add(tooling::Replacement(Env.getSourceManager(),
@@ -1852,120 +1851,6 @@ private:
   FormattingAttemptStatus *Status;
 };
 
-class IdentifierFormatter : public TokenAnalyzer {
-public:
-  IdentifierFormatter(const Environment &Env, const FormatStyle &Style)
-      : TokenAnalyzer(Env, Style) {}
-  std::pair<tooling::Replacements, unsigned>
-  analyze(TokenAnnotator &Annotator,
-          SmallVectorImpl<AnnotatedLine *> &AnnotatedLines,
-          FormatTokenLexer &Tokens) override {
-    tooling::Replacements Result;
-    WhitespaceManager Whitespaces(
-        Env.getSourceManager(), Style,
-        Style.DeriveLineEnding
-            ? inputUsesCRLF(
-                  Env.getSourceManager().getBufferData(Env.getFileID()),
-                  Style.UseCRLF)
-            : Style.UseCRLF);
-    ContinuationIndenter Indenter(Style, Tokens.getKeywords(),
-                                  Env.getSourceManager(), Whitespaces, Encoding,
-                                  BinPackInconclusiveFunctions);
-
-    Style.AlignConsecutiveDeclarations = true;
-    UnwrappedLineFormatter(&Indenter, &Whitespaces, Style, Tokens.getKeywords(),
-                           Env.getSourceManager(), Status)
-        .formatHaikuIdentifier(AnnotatedLines, Env.getSourceManager(), /*DryRun=*/false,
-                     /*AdditionalIndent=*/0,
-                     /*FixBadIndentation=*/false,
-                     /*FirstStartColumn=*/Env.getFirstStartColumn(),
-                     /*NextStartColumn=*/Env.getNextStartColumn(),
-                     /*LastStartColumn=*/Env.getLastStartColumn());
-    for (const auto &R : Whitespaces.generateReplacements())
-      if (Result.add(R))
-        return std::make_pair(Result, 0);
-    return {Result, 0};
-  }
-
-private:
-  std::set<SourceLocation> Done;
-  static bool inputUsesCRLF(StringRef Text, bool DefaultToCRLF) {
-    size_t LF = Text.count('\n');
-    size_t CR = Text.count('\r') * 2;
-    return LF == CR ? DefaultToCRLF : CR > LF;
-  }
-
-  bool
-  hasCpp03IncompatibleFormat(const SmallVectorImpl<AnnotatedLine *> &Lines) {
-    for (const AnnotatedLine *Line : Lines) {
-      if (hasCpp03IncompatibleFormat(Line->Children))
-        return true;
-      for (FormatToken *Tok = Line->First->Next; Tok; Tok = Tok->Next) {
-        if (Tok->WhitespaceRange.getBegin() == Tok->WhitespaceRange.getEnd()) {
-          if (Tok->is(tok::coloncolon) && Tok->Previous->is(TT_TemplateOpener))
-            return true;
-          if (Tok->is(TT_TemplateCloser) &&
-              Tok->Previous->is(TT_TemplateCloser))
-            return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  int countVariableAlignments(const SmallVectorImpl<AnnotatedLine *> &Lines) {
-    int AlignmentDiff = 0;
-    for (const AnnotatedLine *Line : Lines) {
-      AlignmentDiff += countVariableAlignments(Line->Children);
-      for (FormatToken *Tok = Line->First; Tok && Tok->Next; Tok = Tok->Next) {
-        if (!Tok->is(TT_PointerOrReference))
-          continue;
-        bool SpaceBefore =
-            Tok->WhitespaceRange.getBegin() != Tok->WhitespaceRange.getEnd();
-        bool SpaceAfter = Tok->Next->WhitespaceRange.getBegin() !=
-                          Tok->Next->WhitespaceRange.getEnd();
-        if (SpaceBefore && !SpaceAfter)
-          ++AlignmentDiff;
-        if (!SpaceBefore && SpaceAfter)
-          --AlignmentDiff;
-      }
-    }
-    return AlignmentDiff;
-  }
-
-  void
-  deriveLocalStyle(const SmallVectorImpl<AnnotatedLine *> &AnnotatedLines) {
-    bool HasBinPackedFunction = false;
-    bool HasOnePerLineFunction = false;
-    for (unsigned i = 0, e = AnnotatedLines.size(); i != e; ++i) {
-      if (!AnnotatedLines[i]->First->Next)
-        continue;
-      FormatToken *Tok = AnnotatedLines[i]->First->Next;
-      while (Tok->Next) {
-        if (Tok->PackingKind == PPK_BinPacked)
-          HasBinPackedFunction = true;
-        if (Tok->PackingKind == PPK_OnePerLine)
-          HasOnePerLineFunction = true;
-
-        Tok = Tok->Next;
-      }
-    }
-    if (Style.DerivePointerAlignment)
-      Style.PointerAlignment = countVariableAlignments(AnnotatedLines) <= 0
-                                   ? FormatStyle::PAS_Left
-                                   : FormatStyle::PAS_Right;
-    if (Style.Standard == FormatStyle::LS_Auto)
-      Style.Standard = hasCpp03IncompatibleFormat(AnnotatedLines)
-                           ? FormatStyle::LS_Latest
-                           : FormatStyle::LS_Cpp03;
-    BinPackInconclusiveFunctions =
-        HasBinPackedFunction || !HasOnePerLineFunction;
-  }
-
-  bool BinPackInconclusiveFunctions;
-  FormattingAttemptStatus *Status;
-};
-
 class LayoutBuilderFormatter : public TokenAnalyzer {
 public:
   LayoutBuilderFormatter(const Environment &Env, const FormatStyle &Style)
@@ -1977,12 +1862,8 @@ public:
           FormatTokenLexer &Tokens) override {
     tooling::Replacements Result;
     if (AffectedRangeMgr.computeAffectedLines(AnnotatedLines)) {
-      // layoutbuilderformatter(AnnotatedLines, Result);
-
-      unsigned Penalty = 0;
 
       for (AnnotatedLine *Line : AnnotatedLines) {
-        // layoutbuilderformatter(Line->Children, Result);
 
         // Get first token that is not a comment.
         const FormatToken *FirstTok = Line->First;
@@ -2014,13 +1895,7 @@ public:
           unsigned BLB_LineEnd =
               EndSrcBLayoutBuilder.getLineNumber(Env.getSourceManager());
           bool shouldIndent = false;
-          unsigned indentLevel = 0;
-          // It tells if the line should be breaked after it has been indented
-          bool shouldBreak = false;
-          // These are used to calculate the indent that should be done
-          // after the line is breaked
-          unsigned calculateBreak = 0;
-          unsigned value = 0;
+          int indentLevel = 0;
 
           FormatToken *NextTok = FirstTok->Next;
           for (FormatToken *Tok = Line->First; Tok; Tok = Tok->Next) {
@@ -2035,7 +1910,7 @@ public:
             }
 
             if (shouldIndent && BLB_LineStart != BLB_LineEnd) {
-              for (unsigned i = 0; i < indentLevel; i++) {
+              for (int i = 0; i < indentLevel; i++) {
                 cantFail(Result.add(tooling::Replacement(Env.getSourceManager(),
                                                          TokSrcLoc, 0, "\t")));
               }
@@ -2043,9 +1918,7 @@ public:
               // use it to compare with the current token's line number and
               // if they do not match then it means that there is a new line
               // now it should be indented
-              shouldBreak = true;
               BLB_LineStart = TokSrcLoc.getLineNumber(Env.getSourceManager());
-              value = Tok->OriginalColumn;
             }
 
             NextTok = Tok->Next;
@@ -2063,13 +1936,12 @@ public:
             if (NextTok != nullptr) {
               // If current token is . and next is AddGroup
               // then it should not indent but it's child should be indented
-              if (NextTok->TokenText == "AddGroup") {
+              if (NextTok->TokenText == "AddGroup" || NextTok->TokenText == "AddGrid") {
                 shouldIndent = false;
                 indentLevel++;
                 BLB_LineStart = TokSrcLoc.getLineNumber(Env.getSourceManager());
               }
             }
-            calculateBreak = indentLevel;
           }
         }
       }
@@ -3126,16 +2998,12 @@ reformat(const FormatStyle &Style, StringRef Code,
       return TrailingCommaInserter(Env, Expanded).process();
     });
 
-  Passes.emplace_back([&](const Environment &Env) { 
-      return LayoutBuilderFormatter(Env, Expanded).process();
-    });
-
   Passes.emplace_back([&](const Environment &Env) {
-    return MergeOrBreak(Env, Expanded).process();
+    return LayoutBuilderFormatter(Env, Expanded).process();
   });
 
   Passes.emplace_back([&](const Environment &Env) {
-    return IdentifierFormatter(Env, Expanded).process();
+    return MergeOrBreak(Env, Expanded).process();
   });
 
   auto Env =
