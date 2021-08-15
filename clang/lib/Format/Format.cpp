@@ -189,7 +189,6 @@ template <> struct ScalarEnumerationTraits<FormatStyle::BraceInsertionStyle> {
   }
 };
 
-
 template <> struct ScalarEnumerationTraits<FormatStyle::BinaryOperatorStyle> {
   static void enumeration(IO &IO, FormatStyle::BinaryOperatorStyle &Value) {
     IO.enumCase(Value, "All", FormatStyle::BOS_All);
@@ -1719,8 +1718,7 @@ private:
         if (Done.count(startBraceLoc))
           break;
 
-        if (Style.InsertBraces ==
-                FormatStyle::BIS_Always ||
+        if (Style.InsertBraces == FormatStyle::BIS_Always ||
             Line->Last->OriginalColumn > Style.ColumnLimit) {
           Done.insert(startBraceLoc);
           cantFail(Result.add(tooling::Replacement(Env.getSourceManager(),
@@ -1852,6 +1850,221 @@ private:
   FormattingAttemptStatus *Status;
 };
 
+
+// The following class will finally indent the lines that 
+// start with the return type
+
+/*
+  static        int             variable1;
+  int             variable2;
+  bool            variable3;
+
+  To
+
+  static        int             variable1;
+                int             variable2;
+                bool            variable3;
+*/
+class IdentifierIndentor : public TokenAnalyzer {
+public:
+  IdentifierIndentor(const Environment &Env, const FormatStyle &Style)
+      : TokenAnalyzer(Env, Style) {}
+  std::pair<tooling::Replacements, unsigned>
+  analyze(TokenAnnotator &Annotator,
+          SmallVectorImpl<AnnotatedLine *> &AnnotatedLines,
+          FormatTokenLexer &Tokens) override {
+    tooling::Replacements Result;
+    if (format) {
+      format = false;
+      bool format_identifier = false;
+      SmallVectorImpl<AnnotatedLine *>::const_iterator I, E;
+
+      // initilizing I with first line of the file and E with end line
+      I = AnnotatedLines.begin();
+      E = AnnotatedLines.end();
+      int r_paren = 0;
+      for (AnnotatedLine *Line : AnnotatedLines) {
+        // check if I is at the end of the line then don't increment it because it is at the EOF
+        // If *Line is at file's line number 1 then I will be at file's line number 2.
+        if (I + 1 != E) {
+          I = I + 1;
+        }
+
+        // If there are public or private or protected access specifier then make 
+        // format_identifier as true and r_paren = 1
+        // Here r_paren is a hypothetical parenthesis that starts after private, public or
+        // protected and till this r_paren is 1 and format_identifier is true that means
+        // we are indenting the public or private or protected members of a class.
+        if (Line->First->isOneOf(tok::kw_private, tok::kw_protected,
+                                 tok::kw_public) && (r_paren == 0 || r_paren == 1)) {
+          format_identifier = true;
+          r_paren = 1;
+        }
+
+        // If the next line starts with a parenthesis then it means that the current line is function
+        // and we will not indent it as per our guidelines e.g.
+        /*
+          virtual void fx()
+          {
+            // something here...
+          }
+        */
+       // so we just increnrt r_paren by 1 to indecate that it is a function and everything that is inside
+       // this function should not be indented.
+        if (I[0]->First->is(tok::l_brace)) {
+          r_paren = r_paren + 1;
+        }
+        // Now we are back to the line where *Line is and checking if the line starts with }
+        // This will indencate that either it is end of function or end of class
+        I = I - 1;
+        if (I[0]->First->is(tok::r_brace)) {
+          r_paren = r_paren - 1;
+        }
+        // Handeling special case
+        if (I[0]->First->isOneOf(tok::kw_for, tok::kw_while, tok::kw_do,
+          tok::kw_if, tok::kw_else, tok::kw_switch) && I[0]->Last->is(tok::l_brace)) {
+          r_paren = r_paren + 1;
+        }
+        // If r_paren == 0 then format_identifier is false which means we have reached at the end of class
+        // and nothing should be formatted now.
+        if (r_paren == 0) {
+          format_identifier = false;
+        }
+        if (format_identifier && r_paren == 1) {
+        for (FormatToken *Tok = Line->First->Next; Tok; Tok = Tok->Next) {
+          const SourceLocation startToken = Line->First->Tok.getLocation();
+          const SourceLocation endToken = Line->Last->Tok.getLocation();
+
+          // If the line's first token is a return type then indent line to 3 tabs
+          if (Tok->Next && Tok->is(tok::identifier) && Tok->Next->isOneOf(tok::comma, tok::semi, tok::l_paren, tok::l_square)) {
+            if((Tok->Previous == Line->First && Line->First->isNot(tok::tilde)) ||
+            (Tok->Previous->isOneOf(tok::star, tok::amp) && Tok->Previous->Previous == Line->First)) {
+              const SourceLocation TokSrcLoc = Line->First->Tok.getLocation();
+              std::string indent = "";
+              for (int currIndent = Line->First->OriginalColumn; currIndent < 16; currIndent = currIndent + 4) {
+                indent = indent + "\t";
+              }
+              cantFail(Result.add(tooling::Replacement(Env.getSourceManager(),
+                                                   TokSrcLoc, 0, indent)));
+
+              if (startToken.getLineNumber(Env.getSourceManager()) !=
+                       endToken.getLineNumber(Env.getSourceManager())) {
+                         FormatToken* nextToken = Line->First;
+                         while (nextToken) {
+                          if(nextToken->Next) {
+                            const SourceLocation currTokenLoc = nextToken->Tok.getLocation();
+                            const SourceLocation nextTokenLoc = nextToken->Next->Tok.getLocation();
+                            if (currTokenLoc.getLineNumber(Env.getSourceManager()) !=
+                                nextTokenLoc.getLineNumber(Env.getSourceManager())) {
+                                  indent = "";
+                                  for (int currIndent = nextToken->Next->OriginalColumn; currIndent < 32; currIndent = currIndent + 4) {
+                                    indent = indent + "\t";
+                                  }
+                                  const SourceLocation TokSrcLoc1 = nextToken->Next->Tok.getLocation();
+                                  llvm::cantFail(Result.add(tooling::Replacement(
+                                  Env.getSourceManager(), TokSrcLoc1, 0, indent)));
+                                }
+                          }
+                          nextToken = nextToken->Next;
+                         }
+                       }
+              break;
+            }
+          } else if ((format_identifier && Tok->isOneOf(tok::star, tok::amp, tok::coloncolon, tok::less) &&
+                Tok->Previous == Line->First) || (Tok->Previous->is(tok::coloncolon) && Tok->Previous == Line->First)) {
+              // If token is one of the return type and line is of type
+              /*
+                int*      variable;
+              */
+              const SourceLocation TokSrcLoc = Line->First->Tok.getLocation();
+              std::string indent = "";
+              for (int currIndent = Line->First->OriginalColumn; currIndent < 16; currIndent = currIndent + 4) {
+                indent = indent + "\t";
+              }
+              cantFail(Result.add(tooling::Replacement(Env.getSourceManager(),
+                                                   TokSrcLoc, 0, indent)));
+              if (startToken.getLineNumber(Env.getSourceManager()) !=
+                       endToken.getLineNumber(Env.getSourceManager())) {
+                         FormatToken* nextToken = Line->First;
+                         while (nextToken) {
+                          if(nextToken->Next) {
+                            const SourceLocation currTokenLoc = nextToken->Tok.getLocation();
+                            const SourceLocation nextTokenLoc = nextToken->Next->Tok.getLocation();
+                            if (currTokenLoc.getLineNumber(Env.getSourceManager()) !=
+                                nextTokenLoc.getLineNumber(Env.getSourceManager())) {
+                                  indent = "";
+                                  for (int currIndent = nextToken->Next->OriginalColumn; currIndent < 32; currIndent = currIndent + 4) {
+                                    indent = indent + "\t";
+                                  }
+                                  const SourceLocation TokSrcLoc1 = nextToken->Next->Tok.getLocation();
+                                  llvm::cantFail(Result.add(tooling::Replacement(
+                                  Env.getSourceManager(), TokSrcLoc1, 0, indent)));
+                                }
+                          }
+                          nextToken = nextToken->Next;
+                         }
+                       }
+              break;
+          }
+          else if (Tok->Next && Line->Last->TokenText == ";" &&
+                   Line->Last->Previous->TokenText == ")" &&
+                   format_identifier
+                       && (Line->First->is(tok::identifier) || Line->First->is(tok::tilde))) {
+            // If the line is a function i.e. constructor or destructor then it should be
+            // indented 7 times the current level.
+            const SourceLocation TokSrcLoc = Line->First->Tok.getLocation();
+            std::string indent = "";
+              for (int currIndent = Line->First->OriginalColumn; currIndent < 32; currIndent = currIndent + 4) {
+                indent = indent + "\t";
+              }
+            cantFail(Result.add(tooling::Replacement(
+              Env.getSourceManager(), TokSrcLoc, 0, indent)));
+              // BreakAndIndent(Line, startToken, endToken, indent, Result);
+              if (startToken.getLineNumber(Env.getSourceManager()) !=
+                       endToken.getLineNumber(Env.getSourceManager())) {
+                         FormatToken* nextToken = Line->First;
+                         while (nextToken) {
+                          if(nextToken->Next) {
+                            const SourceLocation currTokenLoc = nextToken->Tok.getLocation();
+                            const SourceLocation nextTokenLoc = nextToken->Next->Tok.getLocation();
+                            if (currTokenLoc.getLineNumber(Env.getSourceManager()) !=
+                                nextTokenLoc.getLineNumber(Env.getSourceManager())) {
+                                  const SourceLocation TokSrcLoc1 = nextToken->Next->Tok.getLocation();
+                                  llvm::cantFail(Result.add(tooling::Replacement(
+                                  Env.getSourceManager(), TokSrcLoc1, 0, indent)));
+                                }
+                          }
+                          nextToken = nextToken->Next;
+                         }
+                       }
+              break;
+            }
+
+          }
+        }
+        I = I + 1;
+      }
+    }
+    return {Result, 0};
+  }
+
+private:
+  bool format = true;
+
+};
+
+// The following class basically formats all the identifiers, return types and modifiers like
+/*
+  static int variable1;
+  int variable2;
+  bool variable3;
+  
+  To
+
+  static        int             variable1;
+  int             variable2;
+  bool            variable3;
+*/
 class IdentifierFormatter : public TokenAnalyzer {
 public:
   IdentifierFormatter(const Environment &Env, const FormatStyle &Style)
@@ -1875,15 +2088,17 @@ public:
     Style.AlignConsecutiveDeclarations = true;
     UnwrappedLineFormatter(&Indenter, &Whitespaces, Style, Tokens.getKeywords(),
                            Env.getSourceManager(), Status)
-        .formatHaikuIdentifier(AnnotatedLines, Env.getSourceManager(), /*DryRun=*/false,
-                     /*AdditionalIndent=*/0,
-                     /*FixBadIndentation=*/false,
-                     /*FirstStartColumn=*/Env.getFirstStartColumn(),
-                     /*NextStartColumn=*/Env.getNextStartColumn(),
-                     /*LastStartColumn=*/Env.getLastStartColumn());
+        .formatHaikuIdentifier(AnnotatedLines, Env.getSourceManager(),
+                               /*DryRun=*/false,
+                               /*AdditionalIndent=*/0,
+                               /*FixBadIndentation=*/false,
+                               /*FirstStartColumn=*/Env.getFirstStartColumn(),
+                               /*NextStartColumn=*/Env.getNextStartColumn(),
+                               /*LastStartColumn=*/Env.getLastStartColumn());
     for (const auto &R : Whitespaces.generateReplacements())
       if (Result.add(R))
         return std::make_pair(Result, 0);
+
     return {Result, 0};
   }
 
@@ -1976,11 +2191,8 @@ public:
           SmallVectorImpl<AnnotatedLine *> &AnnotatedLines,
           FormatTokenLexer &Tokens) override {
     tooling::Replacements Result;
-    if (AffectedRangeMgr.computeAffectedLines(AnnotatedLines)) {
-      // layoutbuilderformatter(AnnotatedLines, Result);
-
-      unsigned Penalty = 0;
-
+    if (AffectedRangeMgr.computeAffectedLines(AnnotatedLines) && format) {
+      format = false;
       for (AnnotatedLine *Line : AnnotatedLines) {
         // layoutbuilderformatter(Line->Children, Result);
 
@@ -2014,13 +2226,7 @@ public:
           unsigned BLB_LineEnd =
               EndSrcBLayoutBuilder.getLineNumber(Env.getSourceManager());
           bool shouldIndent = false;
-          unsigned indentLevel = 0;
-          // It tells if the line should be breaked after it has been indented
-          bool shouldBreak = false;
-          // These are used to calculate the indent that should be done
-          // after the line is breaked
-          unsigned calculateBreak = 0;
-          unsigned value = 0;
+          int indentLevel = 0;
 
           FormatToken *NextTok = FirstTok->Next;
           for (FormatToken *Tok = Line->First; Tok; Tok = Tok->Next) {
@@ -2035,7 +2241,7 @@ public:
             }
 
             if (shouldIndent && BLB_LineStart != BLB_LineEnd) {
-              for (unsigned i = 0; i < indentLevel; i++) {
+              for (int i = 0; i < indentLevel; i++) {
                 cantFail(Result.add(tooling::Replacement(Env.getSourceManager(),
                                                          TokSrcLoc, 0, "\t")));
               }
@@ -2043,9 +2249,7 @@ public:
               // use it to compare with the current token's line number and
               // if they do not match then it means that there is a new line
               // now it should be indented
-              shouldBreak = true;
               BLB_LineStart = TokSrcLoc.getLineNumber(Env.getSourceManager());
-              value = Tok->OriginalColumn;
             }
 
             NextTok = Tok->Next;
@@ -2063,19 +2267,20 @@ public:
             if (NextTok != nullptr) {
               // If current token is . and next is AddGroup
               // then it should not indent but it's child should be indented
-              if (NextTok->TokenText == "AddGroup") {
+              if (NextTok->TokenText == "AddGroup" || NextTok->TokenText == "AddGrid") {
                 shouldIndent = false;
                 indentLevel++;
                 BLB_LineStart = TokSrcLoc.getLineNumber(Env.getSourceManager());
               }
             }
-            calculateBreak = indentLevel;
           }
         }
       }
     }
     return {Result, 0};
   }
+  private:
+    bool format = true;
 };
 
 /// TrailingCommaInserter inserts trailing commas into container literals.
@@ -3131,11 +3336,15 @@ reformat(const FormatStyle &Style, StringRef Code,
     });
 
   Passes.emplace_back([&](const Environment &Env) {
-    return MergeOrBreak(Env, Expanded).process();
+    return IdentifierFormatter(Env, Expanded).process();
   });
 
   Passes.emplace_back([&](const Environment &Env) {
-    return IdentifierFormatter(Env, Expanded).process();
+    return IdentifierIndentor(Env, Expanded).process();
+  });
+
+  Passes.emplace_back([&](const Environment &Env) {
+    return MergeOrBreak(Env, Expanded).process();
   });
 
   auto Env =

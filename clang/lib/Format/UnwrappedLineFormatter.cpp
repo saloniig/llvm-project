@@ -876,71 +876,224 @@ public:
     return Penalty;
   }
 
+  // Following function is used to break the line after it has been indented
   unsigned formatLineForBLayout(const AnnotatedLine &Line, unsigned ColumnLimit,
                                 const SourceManager &SourceMgr,
                                 unsigned FirstIndent, unsigned FirstStartColumn,
-                                bool DryRun) {
+                                bool DryRun, bool isIndentTrue) {
     unsigned Penalty = 0;
     LineState State =
         Indenter->getInitialState(FirstIndent, FirstStartColumn, &Line, DryRun);
     bool Newline = false;
-    while (State.NextToken) {
-      if (State.NextToken->OriginalColumn + State.NextToken->TokenText.size() >=
-              ColumnLimit &&
-          State.NextToken->Previous->OriginalColumn +
-                  State.NextToken->Previous->TokenText.size() <
-              ColumnLimit) {
-        Newline = true;
+    FormatToken *CommaToken = nullptr;
+    FormatToken *BreakToken = nullptr;
+
+    // Breaking after comma is appereciated so we keep a track of comma and (
+    // and then we break it after that
+    bool CheckNextBreak = true;
+    const SourceLocation currToken = Line.First->Tok.getLocation();
+    const SourceLocation nextTokenOnLine = Line.First->Next->Tok.getLocation();
+    for (FormatToken *Tok = Line.First; Tok && Tok->Next; Tok = Tok->Next) {
+      if (CheckNextBreak && ((CommaToken == nullptr &&
+                              Tok->isOneOf(tok::l_brace, tok::l_paren)) ||
+                             Tok->is(tok::comma) || Tok->is(tok::equal) ||
+                             Tok->TokenText == "|" || Tok->is(tok::minus))) {
+        CommaToken = Tok;
       }
-      if (Newline) {
-        FormatToken *nextToken = State.NextToken->Next;
-        while (State.NextToken->OriginalColumn < nextToken->OriginalColumn) {
-          nextToken = nextToken->Next;
+      if (Tok->OriginalColumn + Tok->TokenText.size() >= ColumnLimit &&
+          CheckNextBreak) {
+        BreakToken = Tok->TokenText == "|" ? Tok->Previous->Previous : Tok;
+        if (Tok->TokenText == "|") {
+          CommaToken = Tok->Previous;
         }
-        State.Stack.back().Indent = nextToken->OriginalColumn + 4;
+
+        CheckNextBreak = false;
+        // In above for loop we select a token where it should break
+        // In the below loop we move state to that token where it should break
+        while (State.NextToken != CommaToken && CommaToken &&
+               State.NextToken->Next) {
+          Indenter->moveStateToNextToken(State, DryRun, Newline);
+        }
+        if (State.NextToken->Next) {
+          Indenter->moveStateToNextToken(State, DryRun, Newline);
+        }
+        if (isIndentTrue) {
+          State.Stack.back().Indent = 36;
+        } else {
+          FormatToken *nextToken = State.NextToken->Next;
+          while (State.NextToken->OriginalColumn < nextToken->OriginalColumn) {
+            if (nextToken->Next) {
+              nextToken = nextToken->Next;
+            } else {
+              break;
+            }
+          }
+          State.Stack.back().Indent = nextToken->OriginalColumn + 4;
+        }
         Penalty = Indenter->addTokenOnNewLineForHaiku(State, DryRun);
       }
-
-      Indenter->moveStateToNextToken(State, DryRun, Newline);
-      Newline = false;
+      unsigned currTokLineNo = Tok->Tok.getLocation().getLineNumber(SourceMgr);
+      unsigned nextTokLineNo =
+          Tok->Next->Tok.getLocation().getLineNumber(SourceMgr);
+      if (currTokLineNo != nextTokLineNo) {
+        CheckNextBreak = true;
+      }
     }
     return Penalty;
   }
 
+  // The following class will indent the return type and identifiers
   unsigned formatIdentifierForHaiku(const AnnotatedLine &Line,
                                     unsigned ColumnLimit,
                                     const SourceManager &SourceMgr,
                                     unsigned FirstIndent,
                                     unsigned FirstStartColumn, bool DryRun) {
     unsigned Penalty = 0;
+    // Here is a special thing about getInitialState function that
+    // it indents the first token of the line and hence the State.NextToken
+    // will point to the 2nd token of the line.
     LineState State =
         Indenter->getInitialState(FirstIndent, FirstStartColumn, &Line, DryRun);
     bool Newline = false;
     bool formatCurrentToken = true;
+    unsigned PreviousExtraSpace = 0;
     while (State.NextToken) {
-      if (State.NextToken->is(tok::l_paren) ||
-          State.NextToken->Previous->TokenText == "~") {
+      // Here we are preventing the code to not indent the
+      // arguments of the function or something like std::map<int, string>
+      if (State.NextToken->isOneOf(tok::l_paren, tok::less)) {
         formatCurrentToken = false;
-      } else if (State.NextToken->is(tok::r_paren)) {
+      } else if (Line.First != State.NextToken) {
+        // if it is a destructor then we should not indent it as it will be
+        // indented later
+        if (State.NextToken->Previous->TokenText == "~")
+          formatCurrentToken = false;
+      } else if (State.NextToken->isOneOf(tok::r_paren, tok::greater)) {
+        // indenting again if the fx arguments are closed
+        // or there is something like std::map<int, string>
+        // because most probably it will now be the next line
         formatCurrentToken = true;
       }
+      // checking if the token is identifier or it is a return type
+      // or if the token text is ~ so that we could indent it at right place.
+      // And formatCurrentToken must be true and it must not be the first token
+      // (as this case will be handled seprately) And the current token must not
+      // be & or * and next token should not be > or , or <
       if ((State.NextToken->is(tok::identifier) ||
+           isReturnType(State.NextToken) ||
            State.NextToken->TokenText == "~") &&
-          formatCurrentToken &&
-          !(State.NextToken->is(TT_FunctionDeclarationName))) {
+          formatCurrentToken && State.NextToken != Line.First &&
+          !State.NextToken->isOneOf(tok::amp, tok::star) &&
+          !State.NextToken->isOneOf(tok::greater, tok::comma, tok::less,
+                                    tok::period) &&
+          !State.NextToken->Previous->isOneOf(tok::period, tok::coloncolon,
+                                              tok::l_square)) {
         formatChildren(State, /*NewLine=*/false, DryRun, Penalty);
-        unsigned ExtraSpace = 33 - State.NextToken->OriginalColumn;
-        // ExtraSpace = State.NextToken->TokenText == "~" ? ExtraSpace - 1 :
-        // ExtraSpace;
+        // The following function will give the exact amount of space required
+        // to indent it to right place.
+        unsigned ExtraSpace = getExtraSpace(State, Line);
+
+        // Here we check if the spaces required to indent can be used or not
+        // Sometimes there will be boolVariable1 which should be bool Variable1.
+        unsigned checkSpaces = State.NextToken->Previous->TokenText.size() +
+                               State.NextToken->Previous->OriginalColumn +
+                               PreviousExtraSpace;
+        if ((checkSpaces >= 32 &&
+             State.NextToken->OriginalColumn + ExtraSpace <= 33) ||
+            (checkSpaces >= 20 &&
+             State.NextToken->OriginalColumn + ExtraSpace <= 21) ||
+            (checkSpaces >= 16 &&
+             State.NextToken->OriginalColumn + ExtraSpace <= 17)) {
+          ExtraSpace = 1;
+        }
+        // Check for extra space to indent correctly
+        // Sometimes the extraspace does not indent correctly so checking if it
+        // will indent it or not
+        if (ExtraSpace != 1 && checkSpaces != 33 &&
+            checkSpaces + ExtraSpace > 33 && !isReturnType(State.NextToken)) {
+          unsigned additional = checkSpaces + ExtraSpace - 33;
+          ExtraSpace = ExtraSpace - additional;
+          if (checkSpaces + ExtraSpace > 33) {
+            ExtraSpace = 1;
+          }
+        }
+
+        // While generating replacement the tabs will be calculated and
+        // the following function will ensure that also it moves
+        // the State to the next token.
         Indenter->addTokenToState(State,
                                   /*Newline=*/State.NextToken->MustBreakBefore,
                                   DryRun, ExtraSpace);
-        break;
+        PreviousExtraSpace = ExtraSpace;
       } else {
+        // if it should not be formatted then we must move the state to next
+        // token
         Indenter->moveStateToNextToken(State, DryRun, Newline);
       }
     }
     return Penalty;
+  }
+
+  // This function is used to identify that either
+  // it is a return type (either built in to c++ or custom like BString)
+  bool isReturnType(FormatToken *Token) {
+    if (Token->Next && Token->Next->Next &&
+        (Token->Next->isOneOf(tok::amp, tok::star, tok::less,
+                              tok::coloncolon) ||
+         Token->Next->Next->isOneOf(tok::comma, tok::semi, tok::l_paren,
+                                    tok::l_square)) &&
+        Token->isNot(tok::tilde) &&
+        (Token->Next->is(tok::identifier) ||
+         Token->Next->Next->is(tok::identifier) || Token->TokenText == "std")) {
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+  unsigned getExtraSpace(LineState &State, const AnnotatedLine &Line) {
+    if (isReturnType(State.NextToken)) {
+      // If we are here then it is confirmed that current token is a return type
+      // and the line is in the form of
+      /*
+        static int variable1;
+      */
+      return 17 - State.NextToken->OriginalColumn;
+    } else if (State.NextToken->TokenText == "~" &&
+               !isReturnType(State.NextToken->Previous)) {
+      // if the line is in the form of
+      /*
+        virtual ~Foo();
+      */
+      // Then ~Foo() should be indented
+      return 33 - State.NextToken->OriginalColumn;
+    } else if (isReturnType(
+                   State.NextToken->Previous->isOneOf(tok::star, tok::amp)
+                       ? State.NextToken->Previous->Previous
+                       : State.NextToken->Previous) &&
+               !isReturnType(Line.First)) {
+      // This will confirm that the previous token is return type and
+      // the first token of line is not return type i.e. it is in the form of
+      /*
+        static int variable2;
+      */
+      if (State.NextToken->Previous->isOneOf(tok::star, tok::amp)) {
+        return 16 - (State.NextToken->Previous->TokenText.size() +
+                     State.NextToken->Previous->Previous->TokenText.size());
+      }
+      return 16 - State.NextToken->Previous->TokenText.size();
+    } else {
+      // If this code is executed then line is in the form of
+      /*
+        int* Variable3;
+        int variable4;
+      */
+      // This is not right indent but it will be corrected in next class.
+      if (State.NextToken->Previous->isOneOf(tok::star, tok::amp)) {
+        return 16 - (State.NextToken->Previous->TokenText.size() +
+                     State.NextToken->Previous->Previous->TokenText.size());
+      }
+      return 16 - State.NextToken->Previous->TokenText.size();
+    }
   }
 };
 
@@ -1131,32 +1284,43 @@ unsigned UnwrappedLineFormatter::formatHaiku(
   LineJoiner Joiner(Style, Keywords, Lines);
   LevelIndentTracker IndentTracker(Style, Keywords, 0, AdditionalIndent);
   assert(!Lines.empty());
+  bool format_identifier = false;
   for (AnnotatedLine *Line : Lines) {
-
-    for (FormatToken *Tok = Line->First; Tok; Tok = Tok->Next) {
+    if (!Line->First->is(tok::comment)) {
       const AnnotatedLine &TheLine = *Line;
       const AnnotatedLine *NextLine =
           Joiner.getNextMergedLine(DryRun, IndentTracker);
       unsigned ColumnLimit = getColumnLimit(TheLine.InPPDirective, NextLine);
       unsigned Indent = IndentTracker.getIndent();
-      if (Tok->TokenText == "BLayoutBuilder") {
-        bool FitsIntoOneLine =
-            TheLine.Last->TotalLength + Indent <= ColumnLimit ||
-            (TheLine.Type == LT_ImportStatement &&
-             (Style.Language != FormatStyle::LK_JavaScript ||
-              !Style.JavaScriptWrapImports)) ||
-            (Style.isCSharp() && TheLine.InPPDirective);
-        if (FitsIntoOneLine)
-          NoLineBreakFormatter(Indenter, Whitespaces, Style, this)
-              .formatLineForBLayout(TheLine, ColumnLimit, SourceMgr,
-                                    NextStartColumn + Indent,
-                                    false ? FirstStartColumn : 0, DryRun);
+      const SourceLocation FirstTokLoc = Line->First->Tok.getLocation();
+      unsigned FirstTokLineNumber = FirstTokLoc.getLineNumber(SourceMgr);
+      const SourceLocation LastTokLoc = Line->Last->Tok.getLocation();
+      unsigned LastTokLineNumber = LastTokLoc.getLineNumber(SourceMgr);
+      if (Line->Last->OriginalColumn >= 80) {
+        NoLineBreakFormatter(Indenter, Whitespaces, Style, this)
+            .formatLineForBLayout(TheLine, ColumnLimit, SourceMgr,
+                                  NextStartColumn + Indent,
+                                  false ? FirstStartColumn : 0, DryRun, true);
+      } else if (FirstTokLineNumber != LastTokLineNumber) {
+        FormatToken *FirstToken = Line->First;
+        while (FirstToken->Next) {
+          if (FirstToken->OriginalColumn + FirstToken->TokenText.size() >= 80 &&
+              FirstToken->TokenText.size() != 1) {
+            NoLineBreakFormatter(Indenter, Whitespaces, Style, this)
+                .formatLineForBLayout(
+                    TheLine, ColumnLimit, SourceMgr, NextStartColumn + Indent,
+                    false ? FirstStartColumn : 0, DryRun, false);
+            break;
+          }
+          FirstToken = FirstToken->Next;
+        }
       }
     }
   }
   return 0;
 }
 
+// In the below class we take each line and work on it accordingly
 unsigned UnwrappedLineFormatter::formatHaikuIdentifier(
     const SmallVectorImpl<AnnotatedLine *> &Lines,
     const SourceManager &SourceMgr, bool DryRun, int AdditionalIndent,
@@ -1166,31 +1330,81 @@ unsigned UnwrappedLineFormatter::formatHaikuIdentifier(
   LevelIndentTracker IndentTracker(Style, Keywords, 0, AdditionalIndent);
   assert(!Lines.empty());
   bool format_identifier = false;
-  for (AnnotatedLine *Line : Lines) {
+  unsigned int r_paren = 0;
+  bool isFirstLine = true;
+  SmallVectorImpl<AnnotatedLine *>::const_iterator I, E;
 
-    // for (FormatToken *Tok = Line->First; Tok; Tok = Tok->Next) {
+  // initilizing I with first line of the file and E with end line
+  I = Lines.begin();
+  E = Lines.end();
+  for (AnnotatedLine *Line : Lines) {
+    // check if I is at the end of the line then don't increment it because it
+    // is at the EOF If *Line is at file's line number 1 then I will be at
+    // file's line number 2.
+    if (I + 1 != E) {
+      I = I + 1;
+    }
     const AnnotatedLine &TheLine = *Line;
     const AnnotatedLine *NextLine =
         Joiner.getNextMergedLine(DryRun, IndentTracker);
     unsigned ColumnLimit = getColumnLimit(TheLine.InPPDirective, NextLine);
     unsigned Indent = IndentTracker.getIndent();
 
+    // If there are public or private or protected access specifier then make
+    // format_identifier as true and r_paren = 1
+    // Here r_paren is a hypothetical parenthesis that starts after private,
+    // public or protected and till this r_paren is 1 and format_identifier is
+    // true that means we are indenting the public or private or protected
+    // members of a class.
     if (Line->First->isOneOf(tok::kw_private, tok::kw_protected,
-                             tok::kw_public)) {
+                             tok::kw_public) &&
+        (r_paren == 0 ||
+         r_paren == 1)) { // (r_paren == 0 || r_paren == 1) is to prevent a case
+                          // like private inside a struct
       format_identifier = true;
+      r_paren = 1;
     }
 
-    if (format_identifier) {
+    // If the next line starts with a parenthesis then it means that the current
+    // line is function and we will not indent it as per our guidelines e.g.
+    /*
+      virtual void fx()
+      {
+        // something here...
+      }
+    */
+    // so we just increnrt r_paren by 1 to indecate that it is a function and
+    // everything that is inside this function should not be indented.
+    if (I[0]->First->is(tok::l_brace)) {
+      r_paren = r_paren + 1;
+    }
+    // Now we are back to the line where *Line is and checking if the line
+    // starts with } This will indencate that either it is end of function or
+    // end of class
+    I = I - 1;
+    if (I[0]->First->is(tok::r_brace)) {
+      r_paren = r_paren - 1;
+    }
+    if (I[0]->First->isOneOf(tok::kw_for, tok::kw_while, tok::kw_do, tok::kw_if,
+                             tok::kw_else, tok::kw_switch) &&
+        I[0]->Last->is(tok::l_brace)) {
+      r_paren = r_paren + 1;
+    }
+    // If r_paren == 0 then format_identifier is false which means we have
+    // reached at the end of class and nothing should be formatted now.
+    if (r_paren == 0) {
+      format_identifier = false;
+    }
+
+    if (format_identifier && r_paren == 1 &&
+        !(Line->First->TokenText == "enum")) {
       NoLineBreakFormatter(Indenter, Whitespaces, Style, this)
           .formatIdentifierForHaiku(TheLine, ColumnLimit, SourceMgr,
                                     NextStartColumn + Indent,
                                     false ? FirstStartColumn : 0, DryRun);
     }
 
-    if (Line->First->is(tok::r_brace) || Line->Last->is(tok::l_brace)) {
-      format_identifier = false;
-    }
-    // }
+    I = I + 1;
   }
   return 0;
 }
